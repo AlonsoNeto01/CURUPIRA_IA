@@ -24,7 +24,7 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         runtimeCaching: [
           {
-            urlPattern: /^https:\/\/(tile\.openstreetmap\.org|server\.arcgisonline\.com)\/.*/i,
+            urlPattern: /^https:\/\/(tile\.openstreetmap\.org|server\.arcgisonline\.com|[abc]\.basemaps\.cartocdn\.com)\/.*/i,
             handler: 'CacheFirst',
             options: {
               cacheName: 'curupira-map-tiles',

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Flame, BrainCircuit, Wifi, WifiOff, Compass, MapPin, ShieldAlert,
-  LogOut, RefreshCw, PlusCircle, Send, FileText, Activity
+  LogOut, RefreshCw, PlusCircle, Send, FileText, Activity, ChevronDown, ChevronUp, Zap, Layers, AlertTriangle
 } from 'lucide-react';
 import {
   ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, Legend
@@ -41,6 +41,40 @@ function fmtIC95(inf: number, sup: number): string {
     : `${inf.toFixed(1)} – ${sup.toFixed(1)}`;
 }
 
+function interpretarBiofisica(prev: PrevisaoIA) {
+  const vpd = Number(prev.vpd_kpa);
+  const nest = Number(prev.indice_nesterov);
+  const ang = Number(prev.indice_angstrom);
+  const solo = Number(prev.umidade_solo_pct);
+
+  return {
+    vpd:
+      vpd >= 2.0
+        ? { txt: 'Ar muito seco', tom: 'crit' }
+        : vpd >= 1.5
+        ? { txt: 'Estresse moderado', tom: 'warn' }
+        : { txt: 'Normal', tom: 'ok' },
+    nesterov:
+      nest >= 4000
+        ? { txt: 'Vegetação inflamável', tom: 'crit' }
+        : nest >= 1000
+        ? { txt: 'Atenção à serrapilheira', tom: 'warn' }
+        : { txt: 'Baixa inflamabilidade', tom: 'ok' },
+    angstrom:
+      ang < 2.5
+        ? { txt: 'Ignição facilitada', tom: 'crit' }
+        : ang < 3.0
+        ? { txt: 'Atenção moderada', tom: 'warn' }
+        : { txt: 'Propagação desfavorável', tom: 'ok' },
+    solo:
+      solo < 25
+        ? { txt: 'Solo ressecado', tom: 'warn' }
+        : solo < 32
+        ? { txt: 'Umidade intermediária', tom: 'neutral' }
+        : { txt: 'Solo úmido', tom: 'ok' },
+  };
+}
+
 export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -51,6 +85,7 @@ export default function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [aba, setAba] = useState<'real' | 'ia'>('real');
   const [janelaHoras, setJanelaHoras] = useState<24 | 48 | 168>(48);
+  const [filtroFrente, setFiltroFrente] = useState<'TODAS' | 'CRÍTICA' | 'ALTA'>('TODAS');
   const [municipios, setMunicipios] = useState<MunicipioIBGE[]>([]);
   const [ibgeAtivo, setIbgeAtivo] = useState('1505304');
 
@@ -66,7 +101,9 @@ export default function App() {
   const [gps, setGps] = useState<{ lat: number; lon: number } | null>(null);
   const [frenteAlvo, setFrenteAlvo] = useState<FrenteCombate | null>(null);
 
-  // Formulário CAMPO_BRIGADA
+  // Formulário CAMPO_BRIGADA (recolhível para liberar espaço à lista de frentes)
+  const [formAberto, setFormAberto] = useState(false);
+  const [avisoCoordMapa, setAvisoCoordMapa] = useState(false);
   const [formLat, setFormLat] = useState('');
   const [formLon, setFormLon] = useState('');
   const [formRef, setFormRef] = useState('');
@@ -271,10 +308,21 @@ export default function App() {
         setGps({ lat, lon });
         setFormLat(String(lat));
         setFormLon(String(lon));
+        setFormAberto(true);
       },
-      () => setMsgCampo('Não foi possível obter GPS. Clique no mapa ou digite a coordenada.'),
+      () => {
+        setFormAberto(true);
+        setMsgCampo('Não foi possível obter GPS. Clique no mapa ou digite a coordenada.');
+      },
       { enableHighAccuracy: true, timeout: 10000 }
     );
+  }
+
+  function handleCoordDoMapa(lat: number, lon: number) {
+    setFormLat(String(lat));
+    setFormLon(String(lon));
+    setAvisoCoordMapa(true);
+    window.setTimeout(() => setAvisoCoordMapa(false), 3500);
   }
 
   async function registrarOcorrenciaCampo(e: React.FormEvent) {
@@ -328,9 +376,22 @@ export default function App() {
   );
 
   const { frentes, perimetrosGeoJSON } = useMemo(() => gerarFrentesDBSCAN(focos), [focos]);
-  const ultimaPrev = previsoes[0] || null;
 
-  // Gráfico contínuo: 14 dias reais (VIIRS S-NPP) + projeção D+1, D+2, D+3
+  const kpisMonitoramento = useMemo(() => {
+    const criticas = frentes.filter((f) => f.severidade === 'CRÍTICA').length;
+    const areaTotalHa = frentes.reduce((acc, f) => acc + f.areaHectares, 0);
+    const frpTotalMw = focos.reduce((acc, f) => acc + (Number(f.frp_mw) || 0), 0);
+    return { criticas, areaTotalHa, frpTotalMw };
+  }, [focos, frentes]);
+
+  const frentesFiltradas = useMemo(() => {
+    if (filtroFrente === 'TODAS') return frentes;
+    return frentes.filter((f) => f.severidade === filtroFrente);
+  }, [frentes, filtroFrente]);
+
+  const ultimaPrev = previsoes[0] || null;
+  const tagsBio = useMemo(() => (ultimaPrev ? interpretarBiofisica(ultimaPrev) : null), [ultimaPrev]);
+
   const { dadosGraficoContinuo, dataDivisoria } = useMemo(() => {
     const pontos: Array<{
       label: string;
@@ -352,10 +413,8 @@ export default function App() {
         Number(ultimaPrev.focos_previstos_d2),
         Number(ultimaPrev.focos_previstos_d3)
       );
-      // Evita que um IC muito aberto em período de warm-up achate toda a curva no gráfico
       const tetoVisual = Math.max(maxObs, maxPrev) * 3.5;
 
-      // Conecta o último dia observado ao início da projeção
       if (pontos.length) {
         pontos[pontos.length - 1].previsto = pontos[pontos.length - 1].observado;
       }
@@ -398,7 +457,7 @@ export default function App() {
   }
 
   if (carregandoAuth) {
-    return <div className="center-screen">Carregando Curupira IA...</div>;
+    return <div className="center-screen">Carregando Sala de Situação Curupira IA...</div>;
   }
 
   if (!perfil) {
@@ -406,14 +465,17 @@ export default function App() {
       <div className="center-screen">
         <form className="card login-card" onSubmit={handleLogin}>
           <div className="brand">
-            <Flame size={28} color="#f97316" />
-            <h1>Curupira IA</h1>
+            <div className="brand-icon"><Flame size={24} color="#fb923c" /></div>
+            <div>
+              <h1>Curupira IA</h1>
+              <small>Sala de Situação • Defesa Civil &amp; SEMMA</small>
+            </div>
           </div>
-          <p className="muted">Plataforma Tática & Preditiva de Incêndios Florestais — Pará</p>
+          <p className="muted">Monitoramento Orbital e Previsão de Incêndios Florestais 72h no Pará</p>
           <input type="email" placeholder="E-mail institucional" value={email} onChange={(e) => setEmail(e.target.value)} required />
           <input type="password" placeholder="Senha" value={password} onChange={(e) => setPassword(e.target.value)} required />
           {authErro && <p className="err">{authErro}</p>}
-          <button type="submit" className="btn-primary">Entrar no Sistema</button>
+          <button type="submit" className="btn-primary">Entrar na Sala de Situação</button>
         </form>
       </div>
     );
@@ -425,50 +487,58 @@ export default function App() {
       : null;
 
   const xai = ultimaPrev?.xai_fatores || {};
+  const rotuloJanela = janelaHoras === 168 ? 'Últimos 7 dias' : `Últimas ${janelaHoras}h`;
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <Flame size={24} color="#f97316" />
+          <div className="brand-icon"><Flame size={22} color="#fb923c" /></div>
           <div>
-            <strong>CURUPIRA IA</strong>
-            <small>{perfil.nome_completo} ({perfil.role})</small>
+            <div className="brand-title-row">
+              <strong>CURUPIRA IA</strong>
+              <span className="gov-tag">SALA DE SITUAÇÃO</span>
+            </div>
+            <small>{perfil.nome_completo} • {perfil.cargo || perfil.role}</small>
           </div>
         </div>
 
         <div className="controls">
-          {municipios.length > 1 ? (
-            <select value={ibgeAtivo} onChange={(e) => setIbgeAtivo(e.target.value)}>
-              {municipios.map((m) => (
-                <option key={m.codigo_ibge} value={m.codigo_ibge}>
-                  {m.nome} — {m.uf}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <span className="pill">{municipioAtual?.nome || ibgeAtivo}</span>
-          )}
+          <div className="mun-select-wrap">
+            {municipios.length > 1 ? (
+              <select value={ibgeAtivo} onChange={(e) => setIbgeAtivo(e.target.value)}>
+                {municipios.map((m) => (
+                  <option key={m.codigo_ibge} value={m.codigo_ibge}>
+                    {m.nome} — {m.uf}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="pill">{municipioAtual?.nome || ibgeAtivo}</span>
+            )}
+          </div>
 
-          <span className={`pill ${online ? 'ok' : 'offline'}`}>
-            {online ? <Wifi size={14} /> : <WifiOff size={14} />}
-            {online ? 'Online' : 'Modo Floresta'}
-          </span>
+          <div className="status-actions">
+            <span className={`pill ${online ? 'ok' : 'offline'}`}>
+              {online ? <Wifi size={14} /> : <WifiOff size={14} />}
+              {online ? 'Online' : 'Modo Floresta'}
+            </span>
 
-          {pendentesOutbox > 0 && <span className="pill warn">{pendentesOutbox} pendente(s)</span>}
+            {pendentesOutbox > 0 && <span className="pill warn">{pendentesOutbox} pendente(s)</span>}
 
-          <button className="icon-btn" onClick={sincronizarDadosMunicipio} title="Sincronizar">
-            <RefreshCw size={16} />
-          </button>
-          <button className="icon-btn" onClick={handleLogout} title="Sair">
-            <LogOut size={16} />
-          </button>
+            <button className="icon-btn" onClick={sincronizarDadosMunicipio} title="Sincronizar dados">
+              <RefreshCw size={16} />
+            </button>
+            <button className="icon-btn" onClick={handleLogout} title="Encerrar sessão">
+              <LogOut size={16} />
+            </button>
+          </div>
         </div>
       </header>
 
       <nav className="tabs">
         <button className={aba === 'real' ? 'active' : ''} onClick={() => setAba('real')}>
-          <MapPin size={16} /> Monitoramento Real ({focos.length})
+          <MapPin size={16} /> Monitoramento Real <span className="tab-count mono">{focos.length}</span>
         </button>
         <button className={aba === 'ia' ? 'active' : ''} onClick={() => setAba('ia')}>
           <BrainCircuit size={16} /> IA de Previsão 72h
@@ -476,113 +546,218 @@ export default function App() {
       </nav>
 
       {aba === 'real' ? (
-        <main className="grid-main">
-          <section className="card">
-            <div className="card-head">
-              <h2>Perímetros Ativos DBSCAN (ε = 4,5 km | Buffer = 1,8 km)</h2>
-              <div className="head-actions">
-                <div className="seg-group">
-                  {([24, 48, 168] as const).map((h) => (
-                    <button
-                      key={h}
-                      className={`seg-btn ${janelaHoras === h ? 'on' : ''}`}
-                      onClick={() => setJanelaHoras(h)}
-                    >
-                      {h === 168 ? '7 dias' : `${h}h`}
-                    </button>
-                  ))}
-                </div>
-                <button className="btn-secondary" onClick={capturarGPS}>
-                  <Compass size={15} /> Usar Meu GPS
-                </button>
+        <>
+          <section className="kpis-exec">
+            <div className="card exec-kpi">
+              <div className="exec-kpi-top">
+                <span>Focos Detectados</span>
+                <Flame size={16} color="#fb923c" />
               </div>
+              <strong className="mono">{focos.length.toLocaleString('pt-BR')}</strong>
+              <small className="muted">{rotuloJanela} (VIIRS 375 m + Brigada)</small>
             </div>
 
-            <MapaTatico
-              municipio={municipioAtual}
-              focos={focos}
-              perimetros={perimetrosGeoJSON}
-              onSelectCoord={(lat, lon) => {
-                setFormLat(String(lat));
-                setFormLon(String(lon));
-              }}
-            />
-
-            {frenteAlvo && (
-              <div className="compass-box">
-                <strong>Alvo Selecionado — Frente #{frenteAlvo.clusterId} ({frenteAlvo.severidade})</strong>
-                <div>
-                  GMS: <code>{paraGMS(frenteAlvo.centroLat, 'lat')}</code> |{' '}
-                  <code>{paraGMS(frenteAlvo.centroLon, 'lon')}</code>
-                </div>
-                {nav ? (
-                  <div>
-                    Distância: <strong>{nav.distanciaKm.toFixed(2)} km</strong> | Azimute:{' '}
-                    <strong>{nav.azimute.toFixed(0)}° ({nav.rumoCardeal})</strong>
-                  </div>
-                ) : (
-                  <small className="muted">Clique em "Usar Meu GPS" para calcular distância e rumo azimutal.</small>
-                )}
+            <div className="card exec-kpi">
+              <div className="exec-kpi-top">
+                <span>Frentes Ativas (DBSCAN)</span>
+                <Layers size={16} color="#38bdf8" />
               </div>
-            )}
+              <strong className="mono">{frentes.length}</strong>
+              <small className={kpisMonitoramento.criticas > 0 ? 'tag-inline crit' : 'muted'}>
+                {kpisMonitoramento.criticas} frente(s) de severidade crítica
+              </small>
+            </div>
+
+            <div className="card exec-kpi">
+              <div className="exec-kpi-top">
+                <span>Área Sob Alerta</span>
+                <AlertTriangle size={16} color="#eab308" />
+              </div>
+              <strong className="mono">{kpisMonitoramento.areaTotalHa.toLocaleString('pt-BR')} ha</strong>
+              <small className="muted">Perímetros táticos (buffer 1,8 km)</small>
+            </div>
+
+            <div className="card exec-kpi">
+              <div className="exec-kpi-top">
+                <span>Potência Radiativa Total</span>
+                <Zap size={16} color="#ef4444" />
+              </div>
+              <strong className="mono">
+                {kpisMonitoramento.frpTotalMw.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} MW
+              </strong>
+              <small className="muted">Intensidade energética acumulada</small>
+            </div>
           </section>
 
-          <aside className="side-col">
-            <div className="card">
-              <h3>Frentes de Combate ({frentes.length})</h3>
-              {frentes.length === 0 ? (
-                <p className="muted">Nenhum foco detectado nas últimas {janelaHoras}h neste município.</p>
-              ) : (
-                <div className="lista-frentes">
-                  {frentes.map((fr) => (
-                    <button
-                      key={fr.clusterId}
-                      className={`frente-item ${frenteAlvo?.clusterId === fr.clusterId ? 'sel' : ''}`}
-                      onClick={() => setFrenteAlvo(fr)}
-                    >
-                      <div className="frente-top">
-                        <strong>Frente #{fr.clusterId}</strong>
-                        <span className={`badge ${fr.severidade}`}>{fr.severidade}</span>
-                      </div>
-                      <small>{fr.totalFocos} focos • {fr.areaHectares} ha • {fr.frpTotalMw} MW</small>
-                      {fr.jurisdicoes.length > 0 && (
-                        <small className="jurisd">{fr.jurisdicoes.join(' | ')}</small>
-                      )}
-                    </button>
-                  ))}
+          <main className="grid-main">
+            <section className="card">
+              <div className="card-head">
+                <div>
+                  <h2>Mapa de Focos e Frentes Ativas</h2>
+                  <small className="muted">Agrupamento tático DBSCAN (4,5 km) • Satélite híbrido com estradas e comunidades</small>
+                </div>
+                <div className="head-actions">
+                  <div className="seg-group">
+                    {([24, 48, 168] as const).map((h) => (
+                      <button
+                        key={h}
+                        type="button"
+                        className={`seg-btn ${janelaHoras === h ? 'on' : ''}`}
+                        onClick={() => setJanelaHoras(h)}
+                      >
+                        {h === 168 ? '7 dias' : `${h}h`}
+                      </button>
+                    ))}
+                  </div>
+                  <button type="button" className="btn-secondary" onClick={capturarGPS}>
+                    <Compass size={15} /> Usar Meu GPS
+                  </button>
+                </div>
+              </div>
+
+              <MapaTatico
+                municipio={municipioAtual}
+                focos={focos}
+                perimetros={perimetrosGeoJSON}
+                frenteSelecionada={frenteAlvo}
+                onSelectFrente={(cid) => {
+                  const achada = frentes.find((f) => f.clusterId === cid);
+                  if (achada) setFrenteAlvo(achada);
+                }}
+                onSelectCoord={handleCoordDoMapa}
+              />
+
+              {avisoCoordMapa && (
+                <div className="coord-toast">
+                  📍 Coordenada capturada do mapa (<span className="mono">{formLat}, {formLon}</span>) — abra "+ Nova Ocorrência em Campo" para registrar.
                 </div>
               )}
-            </div>
 
-            <form className="card" onSubmit={registrarOcorrenciaCampo}>
-              <h3><PlusCircle size={16} /> Registrar Ocorrência (CAMPO_BRIGADA)</h3>
-              <div className="row2">
-                <input placeholder="Latitude" value={formLat} onChange={(e) => setFormLat(e.target.value)} required />
-                <input placeholder="Longitude" value={formLon} onChange={(e) => setFormLon(e.target.value)} required />
+              {frenteAlvo && (
+                <div className="compass-box">
+                  <div className="compass-head">
+                    <strong>Alvo Tático — Frente #{frenteAlvo.clusterId}</strong>
+                    <span className={`badge ${frenteAlvo.severidade}`}>{frenteAlvo.severidade}</span>
+                  </div>
+                  <div className="mono-line">
+                    GMS (Rádio/Garmin): <code className="mono">{paraGMS(frenteAlvo.centroLat, 'lat')}</code> |{' '}
+                    <code className="mono">{paraGMS(frenteAlvo.centroLon, 'lon')}</code>
+                  </div>
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    {frenteAlvo.totalFocos} focos • {frenteAlvo.areaHectares.toLocaleString('pt-BR')} ha • Potência {frenteAlvo.frpTotalMw} MW
+                  </div>
+                  {nav ? (
+                    <div style={{ marginTop: 4 }}>
+                      Distância: <strong className="mono">{nav.distanciaKm.toFixed(2)} km</strong> | Azimute:{' '}
+                      <strong className="mono">{nav.azimute.toFixed(0)}° ({nav.rumoCardeal})</strong>
+                    </div>
+                  ) : (
+                    <small className="muted">Clique em "Usar Meu GPS" para calcular distância e rumo azimutal.</small>
+                  )}
+                </div>
+              )}
+            </section>
+
+            <aside className="side-col">
+              <div className="card">
+                <div className="frentes-header">
+                  <h3>Frentes de Combate ({frentesFiltradas.length})</h3>
+                  <div className="seg-group compact">
+                    {([
+                      { id: 'TODAS', lbl: 'Todas' },
+                      { id: 'CRÍTICA', lbl: 'Críticas' },
+                      { id: 'ALTA', lbl: 'Altas' },
+                    ] as const).map((op) => (
+                      <button
+                        key={op.id}
+                        type="button"
+                        className={`seg-btn ${filtroFrente === op.id ? 'on' : ''}`}
+                        onClick={() => setFiltroFrente(op.id)}
+                      >
+                        {op.lbl}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {frentesFiltradas.length === 0 ? (
+                  <p className="muted">Nenhuma frente com este filtro nas últimas {janelaHoras}h.</p>
+                ) : (
+                  <div className={`lista-frentes ${formAberto ? 'compact-list' : 'expanded-list'}`}>
+                    {frentesFiltradas.map((fr) => (
+                      <button
+                        key={fr.clusterId}
+                        type="button"
+                        className={`frente-item ${frenteAlvo?.clusterId === fr.clusterId ? 'sel' : ''}`}
+                        onClick={() => setFrenteAlvo(fr)}
+                      >
+                        <div className="frente-top">
+                          <strong>Frente #{fr.clusterId}</strong>
+                          <span className={`badge ${fr.severidade}`}>{fr.severidade}</span>
+                        </div>
+                        <small className="mono">
+                          {fr.totalFocos} focos • {fr.areaHectares.toLocaleString('pt-BR')} ha • {fr.frpTotalMw} MW
+                        </small>
+                        <small className="muted block-coord mono">
+                          {paraGMS(fr.centroLat, 'lat')} • {paraGMS(fr.centroLon, 'lon')}
+                        </small>
+                        {fr.jurisdicoes.length > 0 && (
+                          <small className="jurisd">{fr.jurisdicoes.join(' | ')}</small>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-              <input
-                placeholder="Local de referência (ramal, comunidade, rio)"
-                value={formRef}
-                onChange={(e) => setFormRef(e.target.value)}
-              />
-              <select value={formPorte} onChange={(e) => setFormPorte(e.target.value)}>
-                <option value="Pequeno">Porte Pequeno (Inicial)</option>
-                <option value="Médio">Porte Médio (Expansão)</option>
-                <option value="Grande">Porte Grande (Crítico)</option>
-              </select>
-              <textarea
-                rows={2}
-                placeholder="Observações da brigada em campo..."
-                value={formObs}
-                onChange={(e) => setFormObs(e.target.value)}
-              />
-              <button type="submit" className="btn-primary">
-                <Send size={14} /> {online ? 'Enviar ao PostGIS' : 'Salvar Offline (Modo Floresta)'}
-              </button>
-              {msgCampo && <small className="ok-msg">{msgCampo}</small>}
-            </form>
-          </aside>
-        </main>
+
+              <div className="card">
+                <button
+                  type="button"
+                  className="collapse-toggle"
+                  onClick={() => setFormAberto((v) => !v)}
+                >
+                  <span><PlusCircle size={16} color="#fb923c" /> + Nova Ocorrência em Campo</span>
+                  {formAberto ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                </button>
+
+                {formLat && formLon && !formAberto && (
+                  <small className="coord-ready mono" onClick={() => setFormAberto(true)}>
+                    📍 Ponto pronto: {formLat}, {formLon} (clique para abrir)
+                  </small>
+                )}
+
+                {formAberto && (
+                  <form className="campo-form" onSubmit={registrarOcorrenciaCampo}>
+                    <div className="row2">
+                      <input className="mono" placeholder="Latitude" value={formLat} onChange={(e) => setFormLat(e.target.value)} required />
+                      <input className="mono" placeholder="Longitude" value={formLon} onChange={(e) => setFormLon(e.target.value)} required />
+                    </div>
+                    <input
+                      placeholder="Local de referência (ramal, comunidade, rio)"
+                      value={formRef}
+                      onChange={(e) => setFormRef(e.target.value)}
+                    />
+                    <select value={formPorte} onChange={(e) => setFormPorte(e.target.value)}>
+                      <option value="Pequeno">Porte Pequeno (Inicial)</option>
+                      <option value="Médio">Porte Médio (Expansão)</option>
+                      <option value="Grande">Porte Grande (Crítico)</option>
+                    </select>
+                    <textarea
+                      rows={2}
+                      placeholder="Observações da brigada em campo..."
+                      value={formObs}
+                      onChange={(e) => setFormObs(e.target.value)}
+                    />
+                    <button type="submit" className="btn-primary">
+                      <Send size={14} /> {online ? 'Enviar ao PostGIS' : 'Salvar Offline (Modo Floresta)'}
+                    </button>
+                    {msgCampo && <small className="ok-msg">{msgCampo}</small>}
+                  </form>
+                )}
+              </div>
+            </aside>
+          </main>
+        </>
       ) : (
         <main className="ia-grid">
           {!ultimaPrev ? (
@@ -594,13 +769,13 @@ export default function App() {
               <section className="card risco-banner" style={{ borderLeftColor: COR_RISCO[ultimaPrev.nivel_risco] }}>
                 <div className="risco-row">
                   <div>
-                    <span className="muted">Boletim Oficial — {ultimaPrev.municipio} ({ultimaPrev.data_referencia})</span>
+                    <span className="muted">Boletim Preditivo Oficial — {ultimaPrev.municipio} ({ultimaPrev.data_referencia})</span>
                     <h2 style={{ color: COR_RISCO[ultimaPrev.nivel_risco] }}>
                       <ShieldAlert size={22} /> NÍVEL DE RISCO: {ultimaPrev.nivel_risco}
                     </h2>
                     <small className="muted">
-                      Modelo: {ultimaPrev.modelo_utilizado} • Prob. Dia Crítico (≥5 focos em 24h):{' '}
-                      <strong>{(ultimaPrev.prob_dia_critico_d1 * 100).toFixed(1)}%</strong>
+                      Motor: {ultimaPrev.modelo_utilizado} • Probabilidade de Dia Crítico (≥5 focos em 24h):{' '}
+                      <strong className="mono">{(ultimaPrev.prob_dia_critico_d1 * 100).toFixed(1)}%</strong>
                     </small>
                   </div>
                   <button className="btn-pdf" onClick={handleEmitirPDF} disabled={gerandoPdf}>
@@ -612,15 +787,15 @@ export default function App() {
 
               <section className="cards-3">
                 {[
-                  { lbl: 'D+1 (24 horas)', val: ultimaPrev.focos_previstos_d1, inf: ultimaPrev.ic_inf_d1, sup: ultimaPrev.ic_sup_d1, prob: ultimaPrev.prob_dia_critico_d1 },
-                  { lbl: 'D+2 (48 horas)', val: ultimaPrev.focos_previstos_d2, inf: ultimaPrev.ic_inf_d2, sup: ultimaPrev.ic_sup_d2, prob: ultimaPrev.prob_dia_critico_d2 },
-                  { lbl: 'D+3 (72 horas)', val: ultimaPrev.focos_previstos_d3, inf: ultimaPrev.ic_inf_d3, sup: ultimaPrev.ic_sup_d3, prob: ultimaPrev.prob_dia_critico_d3 },
+                  { lbl: 'D+1 (Próximas 24h)', val: ultimaPrev.focos_previstos_d1, inf: ultimaPrev.ic_inf_d1, sup: ultimaPrev.ic_sup_d1, prob: ultimaPrev.prob_dia_critico_d1 },
+                  { lbl: 'D+2 (Em 48 horas)', val: ultimaPrev.focos_previstos_d2, inf: ultimaPrev.ic_inf_d2, sup: ultimaPrev.ic_sup_d2, prob: ultimaPrev.prob_dia_critico_d2 },
+                  { lbl: 'D+3 (Em 72 horas)', val: ultimaPrev.focos_previstos_d3, inf: ultimaPrev.ic_inf_d3, sup: ultimaPrev.ic_sup_d3, prob: ultimaPrev.prob_dia_critico_d3 },
                 ].map((c) => (
                   <div className="card kpi" key={c.lbl}>
                     <span className="muted">{c.lbl}</span>
-                    <strong>{Number(c.val).toFixed(1)} focos</strong>
-                    <small>IC 95% Conformal: {fmtIC95(Number(c.inf), Number(c.sup))}</small>
-                    <small>Chance Dia Crítico: {(Number(c.prob) * 100).toFixed(0)}%</small>
+                    <strong className="mono">{Number(c.val).toFixed(1)} <small className="unit">focos</small></strong>
+                    <small className="mono">IC 95% Conformal: {fmtIC95(Number(c.inf), Number(c.sup))}</small>
+                    <small>Chance de Dia Crítico: <strong className="mono">{(Number(c.prob) * 100).toFixed(0)}%</strong></small>
                   </div>
                 ))}
               </section>
@@ -628,15 +803,10 @@ export default function App() {
               <section className="grid-main">
                 <div className="card">
                   <div className="card-head">
-                    <h2>Mapa de Zonas com Maior Probabilidade de Fogo (Próximas 72h)</h2>
-                    <small className="muted">Hexágonos 6 km • Reincidência 8 anos + Vento + Clima</small>
-                  </div>
-                  <div className="hex-legend">
-                    <span><i style={{ background: '#eab308' }} /> 35–58 Moderado</span>
-                    <span><i style={{ background: '#f97316' }} /> 58–78 Alto</span>
-                    <span><i style={{ background: '#ef4444' }} /> 78–90 Crítico</span>
-                    <span><i style={{ background: '#991b1b' }} /> 90–97 Severo</span>
-                    <span><i style={{ background: '#450a0a', border: '1px solid #fca5a5' }} /> 97+ Epicentro</span>
+                    <div>
+                      <h2>Mapa de Zonas com Maior Probabilidade de Fogo (Próximas 72h)</h2>
+                      <small className="muted">Hexágonos 6 km • Reincidência histórica (8 anos) + Vento previsto + Secura local</small>
+                    </div>
                   </div>
                   <MapaRiscoIA
                     municipio={municipioAtual}
@@ -646,18 +816,23 @@ export default function App() {
                   />
                   {zonaAlvo && (
                     <div className="compass-box">
-                      <strong>
-                        Setor Selecionado — Risco {zonaAlvo.nivel_risco} ({Number(zonaAlvo.score_risco).toFixed(1)}/100)
-                      </strong>
-                      <div>{zonaAlvo.motivo_principal}</div>
-                      <div>
-                        GMS: <code>{paraGMS(zonaAlvo.centro_lat, 'lat')}</code> |{' '}
-                        <code>{paraGMS(zonaAlvo.centro_lon, 'lon')}</code> • Vento:{' '}
-                        <strong>{Number(zonaAlvo.velocidade_vento_kmh).toFixed(0)} km/h</strong> • Chuva 72h:{' '}
-                        <strong>{Number(zonaAlvo.chuva_prevista_72h_mm).toFixed(1)} mm</strong>
+                      <div className="compass-head">
+                        <strong>
+                          Setor Selecionado — Score <span className="mono">{Number(zonaAlvo.score_risco).toFixed(1)}/100</span>
+                        </strong>
+                        <span className={`badge ${zonaAlvo.nivel_risco === 'CRÍTICO' ? 'CRÍTICA' : zonaAlvo.nivel_risco === 'ALTO' ? 'ALTA' : 'MODERADA'}`}>
+                          {zonaAlvo.nivel_risco}
+                        </span>
+                      </div>
+                      <div style={{ margin: '4px 0' }}>{zonaAlvo.motivo_principal}</div>
+                      <div className="mono-line">
+                        GMS: <code className="mono">{paraGMS(zonaAlvo.centro_lat, 'lat')}</code> |{' '}
+                        <code className="mono">{paraGMS(zonaAlvo.centro_lon, 'lon')}</code> • Vento:{' '}
+                        <strong className="mono">{Number(zonaAlvo.velocidade_vento_kmh).toFixed(0)} km/h</strong> • Chuva 72h:{' '}
+                        <strong className="mono">{Number(zonaAlvo.chuva_prevista_72h_mm).toFixed(1)} mm</strong>
                       </div>
                       <small className="muted">
-                        Composição do score: Reincidência {zonaAlvo.fator_reincidencia}% • Contágio/Vento{' '}
+                        Composição física: Reincidência {zonaAlvo.fator_reincidencia}% • Contágio/Vento{' '}
                         {zonaAlvo.fator_contagio_vento}% • Microclima seco {zonaAlvo.fator_microclima}%
                       </small>
                     </div>
@@ -669,21 +844,22 @@ export default function App() {
                   {zonasRisco.length === 0 ? (
                     <p className="muted">Nenhuma zona atingiu risco moderado (&ge;35/100) para as próximas 72h.</p>
                   ) : (
-                    <div className="lista-frentes" style={{ maxHeight: '440px' }}>
+                    <div className="lista-frentes expanded-list">
                       {zonasRisco.slice(0, 15).map((z, idx) => (
                         <button
                           key={z.hex_id}
+                          type="button"
                           className={`frente-item ${zonaAlvo?.hex_id === z.hex_id ? 'sel' : ''}`}
                           onClick={() => setZonaAlvo(z)}
                         >
                           <div className="frente-top">
-                            <strong>Setor #{idx + 1} • Score {Number(z.score_risco).toFixed(1)}</strong>
+                            <strong>Setor #{idx + 1} • Score <span className="mono">{Number(z.score_risco).toFixed(1)}</span></strong>
                             <span className={`badge ${z.nivel_risco === 'CRÍTICO' ? 'CRÍTICA' : z.nivel_risco === 'ALTO' ? 'ALTA' : 'MODERADA'}`}>
                               {z.nivel_risco}
                             </span>
                           </div>
                           <small>{z.motivo_principal}</small>
-                          <small className="jurisd">
+                          <small className="jurisd mono">
                             {paraGMS(z.centro_lat, 'lat')} | {paraGMS(z.centro_lon, 'lon')}
                           </small>
                         </button>
@@ -694,19 +870,35 @@ export default function App() {
               </section>
 
               <section className="cards-4">
-                <div className="card mini"><span>VPD Atmosférico</span><strong>{ultimaPrev.vpd_kpa} kPa</strong></div>
-                <div className="card mini"><span>Nesterov (G)</span><strong>{ultimaPrev.indice_nesterov}</strong></div>
-                <div className="card mini"><span>Angström (I_A)</span><strong>{ultimaPrev.indice_angstrom}</strong></div>
-                <div className="card mini"><span>Solo 0–7 cm / Seca</span><strong>{ultimaPrev.umidade_solo_pct}% • {ultimaPrev.dias_sem_chuva}d</strong></div>
+                <div className="card mini">
+                  <span>VPD Atmosférico (Secura do Ar)</span>
+                  <strong className="mono">{ultimaPrev.vpd_kpa} kPa</strong>
+                  {tagsBio && <em className={`bio-pill ${tagsBio.vpd.tom}`}>{tagsBio.vpd.txt}</em>}
+                </div>
+                <div className="card mini">
+                  <span>Índice de Nesterov (G)</span>
+                  <strong className="mono">{Number(ultimaPrev.indice_nesterov).toLocaleString('pt-BR')}</strong>
+                  {tagsBio && <em className={`bio-pill ${tagsBio.nesterov.tom}`}>{tagsBio.nesterov.txt}</em>}
+                </div>
+                <div className="card mini">
+                  <span>Índice de Angström (I_A)</span>
+                  <strong className="mono">{ultimaPrev.indice_angstrom}</strong>
+                  {tagsBio && <em className={`bio-pill ${tagsBio.angstrom.tom}`}>{tagsBio.angstrom.txt}</em>}
+                </div>
+                <div className="card mini">
+                  <span>Umidade do Solo (0–7 cm) &amp; Seca</span>
+                  <strong className="mono">{ultimaPrev.umidade_solo_pct}% • {ultimaPrev.dias_sem_chuva}d</strong>
+                  {tagsBio && <em className={`bio-pill ${tagsBio.solo.tom}`}>{tagsBio.solo.txt}</em>}
+                </div>
               </section>
 
               <section className="card">
                 <h3><Activity size={16} /> Explicabilidade Física do Dia (XAI)</h3>
                 <div className="xai-chips">
-                  <span className="xai-chip">Focos S-NPP ontem: <strong>{String(xai.focos_ontem_snpp ?? '—')}</strong></span>
-                  <span className="xai-chip">UR mín. prevista D+1: <strong>{String(xai.ur_min_prevista_d1 ?? '—')}%</strong></span>
-                  <span className="xai-chip">Chuva prevista 72h: <strong>{String(xai.chuva_prevista_72h_mm ?? '—')} mm</strong></span>
-                  <span className="xai-chip">Δ Solo 7d: <strong>{String(xai.delta_solo_7d_pct ?? '—')}%</strong></span>
+                  <span className="xai-chip">Focos VIIRS ontem: <strong className="mono">{String(xai.focos_ontem_snpp ?? '—')}</strong></span>
+                  <span className="xai-chip">UR mín. prevista D+1: <strong className="mono">{String(xai.ur_min_prevista_d1 ?? '—')}%</strong></span>
+                  <span className="xai-chip">Chuva prevista 72h: <strong className="mono">{String(xai.chuva_prevista_72h_mm ?? '—')} mm</strong></span>
+                  <span className="xai-chip">Variação Solo 7d: <strong className="mono">{String(xai.delta_solo_7d_pct ?? '—')}%</strong></span>
                   <span className={`xai-chip ${xai.fim_de_semana_d1 ? 'alerta' : ''}`}>
                     Ciclo antrópico: <strong>{xai.fim_de_semana_d1 ? 'Fim de semana (Sex–Dom)' : 'Dia útil'}</strong>
                   </span>
@@ -714,15 +906,15 @@ export default function App() {
               </section>
 
               <section className="card">
-                <h3>Série Real (14 dias — VIIRS S-NPP) + Projeção CurupiraNet v2 (72h)</h3>
+                <h3>Série Real (14 dias — VIIRS 375 m) + Projeção CurupiraNet v2 (72h)</h3>
                 <div style={{ width: '100%', height: 270 }}>
                   <ResponsiveContainer>
                     <ComposedChart data={dadosGraficoContinuo}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.16)" />
                       <XAxis dataKey="label" stroke="#94a3b8" fontSize={11} />
                       <YAxis stroke="#94a3b8" fontSize={11} />
                       <Tooltip
-                        contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }}
+                        contentStyle={{ background: '#0b1220', border: '1px solid rgba(148,163,184,0.25)', borderRadius: 10 }}
                         formatter={(value, name, item) => {
                           if (name === 'IC 95% (teto visual)' && item?.payload?.icSupReal !== undefined) {
                             return [`${Number(item.payload.icSupReal).toFixed(1)} focos`, 'IC 95% Sup. (Real)'];
@@ -734,8 +926,8 @@ export default function App() {
                       {dataDivisoria && (
                         <ReferenceLine x={dataDivisoria} stroke="#94a3b8" strokeDasharray="4 4" label={{ value: 'Hoje', fill: '#94a3b8', fontSize: 11 }} />
                       )}
-                      <Area type="monotone" dataKey="icSupVisual" fill="#38bdf8" fillOpacity={0.18} stroke="none" name="IC 95% (teto visual)" />
-                      <Line type="monotone" dataKey="observado" stroke="#38bdf8" strokeWidth={2.5} dot={{ r: 3 }} name="Observado (VIIRS S-NPP)" />
+                      <Area type="monotone" dataKey="icSupVisual" fill="#38bdf8" fillOpacity={0.16} stroke="none" name="IC 95% (teto visual)" />
+                      <Line type="monotone" dataKey="observado" stroke="#38bdf8" strokeWidth={2.5} dot={{ r: 3 }} name="Observado (VIIRS 375 m)" />
                       <Line type="monotone" dataKey="previsto" stroke="#f97316" strokeWidth={2.5} strokeDasharray="6 3" dot={{ r: 4 }} name="Previsão IA (72h)" />
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -744,21 +936,23 @@ export default function App() {
 
               <section className="card">
                 <h3>Auditoria Científica — Expanding Window CV (4 Folds, Oriximiná-PA)</h3>
-                <table className="audit-table">
-                  <thead>
-                    <tr>
-                      <th>Fold</th><th>Regime</th><th>MAE Naive</th><th>MAE Curupira v2</th><th>R² 72h</th><th>F1 Crítico</th><th>PICP 95%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {TABELA_4FOLDS.map((r) => (
-                      <tr key={r.fold}>
-                        <td>{r.fold}</td><td>{r.regime}</td><td>{r.maeNaive}</td><td><strong>{r.maeCurupira}</strong></td>
-                        <td>{r.r2}</td><td>{r.f1}</td><td>{r.picp}</td>
+                <div className="table-scroll">
+                  <table className="audit-table">
+                    <thead>
+                      <tr>
+                        <th>Fold</th><th>Regime</th><th>MAE Naive</th><th>MAE Curupira v2</th><th>R² 72h</th><th>F1 Crítico</th><th>PICP 95%</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {TABELA_4FOLDS.map((r) => (
+                        <tr key={r.fold}>
+                          <td>{r.fold}</td><td>{r.regime}</td><td className="mono">{r.maeNaive}</td><td><strong className="mono">{r.maeCurupira}</strong></td>
+                          <td className="mono">{r.r2}</td><td className="mono">{r.f1}</td><td className="mono">{r.picp}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </section>
             </>
           )}
