@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Flame, BrainCircuit, Wifi, WifiOff, Compass, MapPin, ShieldAlert,
-  LogOut, RefreshCw, PlusCircle, Send
+  LogOut, RefreshCw, PlusCircle, Send, FileText, Activity
 } from 'lucide-react';
 import {
-  ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid
+  ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, Legend
 } from 'recharts';
 import {
-  supabase, type FocoIncendio, type MunicipioIBGE, type PerfilUsuario, type PrevisaoIA
+  supabase, type FocoIncendio, type MunicipioIBGE, type PerfilUsuario, type PrevisaoIA, type SerieDiariaItem
 } from './lib/supabase';
 import { offlineDB } from './lib/db';
 import { calcularNavegacao, gerarFrentesDBSCAN, paraGMS, type FrenteCombate } from './lib/geoprocessing';
+import { emitirBoletimOficialPDF } from './lib/boletimPdf';
 import { MapaTatico } from './components/MapaTatico';
 
 const COR_RISCO: Record<string, string> = {
@@ -27,6 +28,12 @@ const TABELA_4FOLDS = [
   { fold: 'Fold 4 (2025)', regime: 'Operacional', maeNaive: '4,717', maeCurupira: '3,787', r2: '0,472', f1: '0,715', picp: '96,5%' },
 ];
 
+function somarDiasISO(dataISO: string, dias: number): string {
+  const dt = new Date(`${dataISO}T12:00:00Z`);
+  dt.setUTCDate(dt.getUTCDate() + dias);
+  return dt.toISOString().slice(5, 10);
+}
+
 export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -36,18 +43,21 @@ export default function App() {
 
   const [online, setOnline] = useState(navigator.onLine);
   const [aba, setAba] = useState<'real' | 'ia'>('real');
+  const [janelaHoras, setJanelaHoras] = useState<24 | 48 | 168>(48);
   const [municipios, setMunicipios] = useState<MunicipioIBGE[]>([]);
   const [ibgeAtivo, setIbgeAtivo] = useState('1505304');
 
   const [focos, setFocos] = useState<FocoIncendio[]>([]);
   const [previsoes, setPrevisoes] = useState<PrevisaoIA[]>([]);
+  const [serieDiaria, setSerieDiaria] = useState<SerieDiariaItem[]>([]);
   const [pendentesOutbox, setPendentesOutbox] = useState(0);
+  const [gerandoPdf, setGerandoPdf] = useState(false);
 
   // GPS e Bússola Azimutal
   const [gps, setGps] = useState<{ lat: number; lon: number } | null>(null);
   const [frenteAlvo, setFrenteAlvo] = useState<FrenteCombate | null>(null);
 
-  // Formulário CAMPO_BRIGADA (funciona 100% offline)
+  // Formulário CAMPO_BRIGADA
   const [formLat, setFormLat] = useState('');
   const [formLon, setFormLon] = useState('');
   const [formRef, setFormRef] = useState('');
@@ -55,7 +65,6 @@ export default function App() {
   const [formObs, setFormObs] = useState('');
   const [msgCampo, setMsgCampo] = useState('');
 
-  // Monitora conectividade Online / Modo Floresta
   useEffect(() => {
     const onUp = () => setOnline(true);
     const onDown = () => setOnline(false);
@@ -67,7 +76,6 @@ export default function App() {
     };
   }, []);
 
-  // Verifica sessão existente
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (data.session?.user) {
@@ -105,7 +113,6 @@ export default function App() {
     setPerfil(null);
   }
 
-  // Carrega lista de municípios autorizados (online -> cache offline)
   useEffect(() => {
     if (!perfil) return;
     (async () => {
@@ -121,18 +128,15 @@ export default function App() {
           return;
         }
       }
-      const locais = await offlineDB.municipios.toArray();
-      setMunicipios(locais);
+      setMunicipios(await offlineDB.municipios.toArray());
     })();
   }, [perfil, online]);
 
-  // Carrega focos (últimos 7 dias) e previsões IA do município ativo
   async function sincronizarDadosMunicipio() {
     if (!perfil || !ibgeAtivo) return;
-    const seteDiasAtras = new Date(Date.now() - 7 * 86400000).toISOString();
+    const corteISO = new Date(Date.now() - janelaHoras * 3600000).toISOString();
 
     if (online) {
-      // 1. Envia fila offline CAMPO_BRIGADA antes de recarregar
       const fila = await offlineDB.outboxCampo.toArray();
       for (const item of fila) {
         const { error } = await supabase.from('focos_incendio').insert({
@@ -154,20 +158,26 @@ export default function App() {
         }
       }
 
-      const [resFocos, resPrev] = await Promise.all([
+      const [resFocos, resPrev, resSerie] = await Promise.all([
         supabase
           .from('focos_incendio')
           .select('*')
           .eq('codigo_ibge', ibgeAtivo)
-          .gte('registado_em', seteDiasAtras)
+          .gte('registado_em', corteISO)
           .order('registado_em', { ascending: false })
-          .limit(500),
+          .limit(2000),
         supabase
           .from('previsoes_ia')
           .select('*')
           .eq('codigo_ibge', ibgeAtivo)
           .order('data_referencia', { ascending: false })
           .limit(15),
+        supabase
+          .from('serie_diaria_municipio')
+          .select('id, codigo_ibge, data, total_focos_snpp, frp_total_snpp, nesterov_raw, dry_spell')
+          .eq('codigo_ibge', ibgeAtivo)
+          .order('data', { ascending: false })
+          .limit(14),
       ]);
 
       if (resFocos.data) {
@@ -180,23 +190,30 @@ export default function App() {
         await offlineDB.previsoes.where('codigo_ibge').equals(ibgeAtivo).delete();
         await offlineDB.previsoes.bulkPut(resPrev.data as PrevisaoIA[]);
       }
+      if (resSerie.data) {
+        const ordenada = [...(resSerie.data as SerieDiariaItem[])].reverse();
+        setSerieDiaria(ordenada);
+        await offlineDB.serieDiaria.where('codigo_ibge').equals(ibgeAtivo).delete();
+        await offlineDB.serieDiaria.bulkPut(ordenada);
+      }
     } else {
-      // Modo Floresta: carrega do IndexedDB
-      const [fLoc, pLoc] = await Promise.all([
+      const [fLoc, pLoc, sLoc] = await Promise.all([
         offlineDB.focos.where('codigo_ibge').equals(ibgeAtivo).toArray(),
         offlineDB.previsoes.where('codigo_ibge').equals(ibgeAtivo).toArray(),
+        offlineDB.serieDiaria.where('codigo_ibge').equals(ibgeAtivo).toArray(),
       ]);
-      setFocos(fLoc);
+      setFocos(fLoc.filter((f) => f.registado_em >= corteISO));
       setPrevisoes(pLoc.sort((a, b) => b.data_referencia.localeCompare(a.data_referencia)));
+      setSerieDiaria(sLoc.sort((a, b) => a.data.localeCompare(b.data)));
     }
     setPendentesOutbox(await offlineDB.outboxCampo.count());
   }
 
   useEffect(() => {
+    setFrenteAlvo(null);
     sincronizarDadosMunicipio();
-  }, [perfil, ibgeAtivo, online]);
+  }, [perfil, ibgeAtivo, janelaHoras, online]);
 
-  // Assinatura Realtime (atualiza ao vivo quando online)
   useEffect(() => {
     if (!perfil || !online) return;
     const canal = supabase
@@ -215,7 +232,7 @@ export default function App() {
     return () => {
       supabase.removeChannel(canal);
     };
-  }, [perfil, ibgeAtivo, online]);
+  }, [perfil, ibgeAtivo, janelaHoras, online]);
 
   function capturarGPS() {
     if (!navigator.geolocation) return;
@@ -270,7 +287,6 @@ export default function App() {
       }
     }
 
-    // Fallback garantido no Modo Floresta (IndexedDB outbox)
     await offlineDB.outboxCampo.add(registro);
     setPendentesOutbox(await offlineDB.outboxCampo.count());
     setMsgCampo('Salvo localmente (Modo Floresta). Será enviado automaticamente ao recuperar sinal.');
@@ -286,16 +302,71 @@ export default function App() {
   const { frentes, perimetrosGeoJSON } = useMemo(() => gerarFrentesDBSCAN(focos), [focos]);
   const ultimaPrev = previsoes[0] || null;
 
-  const dadosGrafico = useMemo(() => {
-    return [...previsoes]
-      .reverse()
-      .map((p) => ({
-        data: p.data_referencia.slice(5),
-        d1: Number(p.focos_previstos_d1),
-        icSup: Number(p.ic_sup_d1),
-        icInf: Number(p.ic_inf_d1),
-      }));
-  }, [previsoes]);
+  // Gráfico contínuo: 14 dias reais (VIIRS S-NPP) + projeção D+1, D+2, D+3
+  const { dadosGraficoContinuo, dataDivisoria } = useMemo(() => {
+    const pontos: Array<{
+      label: string;
+      observado?: number;
+      previsto?: number;
+      icSupVisual?: number;
+      icSupReal?: number;
+    }> = serieDiaria.map((s) => ({
+      label: s.data.slice(5),
+      observado: Number(s.total_focos_snpp),
+    }));
+
+    const ultimaDataObs = pontos.length ? pontos[pontos.length - 1].label : undefined;
+
+    if (ultimaPrev) {
+      const maxObs = Math.max(10, ...pontos.map((p) => p.observado || 0));
+      const maxPrev = Math.max(
+        Number(ultimaPrev.focos_previstos_d1),
+        Number(ultimaPrev.focos_previstos_d2),
+        Number(ultimaPrev.focos_previstos_d3)
+      );
+      // Evita que um IC muito aberto em período de warm-up achate toda a curva no gráfico
+      const tetoVisual = Math.max(maxObs, maxPrev) * 3.5;
+
+      // Conecta o último dia observado ao início da projeção
+      if (pontos.length) {
+        pontos[pontos.length - 1].previsto = pontos[pontos.length - 1].observado;
+      }
+
+      const horizontes = [
+        { dia: 0, tag: 'D+1', val: Number(ultimaPrev.focos_previstos_d1), sup: Number(ultimaPrev.ic_sup_d1) },
+        { dia: 1, tag: 'D+2', val: Number(ultimaPrev.focos_previstos_d2), sup: Number(ultimaPrev.ic_sup_d2) },
+        { dia: 2, tag: 'D+3', val: Number(ultimaPrev.focos_previstos_d3), sup: Number(ultimaPrev.ic_sup_d3) },
+      ];
+
+      for (const h of horizontes) {
+        pontos.push({
+          label: `${somarDiasISO(ultimaPrev.data_referencia, h.dia)} (${h.tag})`,
+          previsto: h.val,
+          icSupVisual: Number(Math.min(h.sup, tetoVisual).toFixed(1)),
+          icSupReal: h.sup,
+        });
+      }
+    }
+
+    return { dadosGraficoContinuo: pontos, dataDivisoria: ultimaDataObs };
+  }, [serieDiaria, ultimaPrev]);
+
+  async function handleEmitirPDF() {
+    if (!municipioAtual || !perfil || !ultimaPrev) return;
+    setGerandoPdf(true);
+    try {
+      await emitirBoletimOficialPDF({
+        municipio: municipioAtual,
+        perfil,
+        previsao: ultimaPrev,
+        frentes,
+        janelaHoras,
+        totalFocosJanela: focos.length,
+      });
+    } finally {
+      setGerandoPdf(false);
+    }
+  }
 
   if (carregandoAuth) {
     return <div className="center-screen">Carregando Curupira IA...</div>;
@@ -310,20 +381,8 @@ export default function App() {
             <h1>Curupira IA</h1>
           </div>
           <p className="muted">Plataforma Tática & Preditiva de Incêndios Florestais — Pará</p>
-          <input
-            type="email"
-            placeholder="E-mail institucional"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-          <input
-            type="password"
-            placeholder="Senha"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+          <input type="email" placeholder="E-mail institucional" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <input type="password" placeholder="Senha" value={password} onChange={(e) => setPassword(e.target.value)} required />
           {authErro && <p className="err">{authErro}</p>}
           <button type="submit" className="btn-primary">Entrar no Sistema</button>
         </form>
@@ -335,6 +394,8 @@ export default function App() {
     gps && frenteAlvo
       ? calcularNavegacao(gps.lat, gps.lon, frenteAlvo.centroLat, frenteAlvo.centroLon)
       : null;
+
+  const xai = ultimaPrev?.xai_fatores || {};
 
   return (
     <div className="app-shell">
@@ -365,9 +426,7 @@ export default function App() {
             {online ? 'Online' : 'Modo Floresta'}
           </span>
 
-          {pendentesOutbox > 0 && (
-            <span className="pill warn">{pendentesOutbox} pendente(s)</span>
-          )}
+          {pendentesOutbox > 0 && <span className="pill warn">{pendentesOutbox} pendente(s)</span>}
 
           <button className="icon-btn" onClick={sincronizarDadosMunicipio} title="Sincronizar">
             <RefreshCw size={16} />
@@ -392,10 +451,24 @@ export default function App() {
           <section className="card">
             <div className="card-head">
               <h2>Perímetros Ativos DBSCAN (ε = 4,5 km | Buffer = 1,8 km)</h2>
-              <button className="btn-secondary" onClick={capturarGPS}>
-                <Compass size={15} /> Usar Meu GPS
-              </button>
+              <div className="head-actions">
+                <div className="seg-group">
+                  {([24, 48, 168] as const).map((h) => (
+                    <button
+                      key={h}
+                      className={`seg-btn ${janelaHoras === h ? 'on' : ''}`}
+                      onClick={() => setJanelaHoras(h)}
+                    >
+                      {h === 168 ? '7 dias' : `${h}h`}
+                    </button>
+                  ))}
+                </div>
+                <button className="btn-secondary" onClick={capturarGPS}>
+                  <Compass size={15} /> Usar Meu GPS
+                </button>
+              </div>
             </div>
+
             <MapaTatico
               municipio={municipioAtual}
               focos={focos}
@@ -429,7 +502,7 @@ export default function App() {
             <div className="card">
               <h3>Frentes de Combate ({frentes.length})</h3>
               {frentes.length === 0 ? (
-                <p className="muted">Nenhum foco detectado nos últimos 7 dias neste município.</p>
+                <p className="muted">Nenhum foco detectado nas últimas {janelaHoras}h neste município.</p>
               ) : (
                 <div className="lista-frentes">
                   {frentes.map((fr) => (
@@ -442,9 +515,7 @@ export default function App() {
                         <strong>Frente #{fr.clusterId}</strong>
                         <span className={`badge ${fr.severidade}`}>{fr.severidade}</span>
                       </div>
-                      <small>
-                        {fr.totalFocos} focos • {fr.areaHectares} ha • {fr.frpTotalMw} MW
-                      </small>
+                      <small>{fr.totalFocos} focos • {fr.areaHectares} ha • {fr.frpTotalMw} MW</small>
                       {fr.jurisdicoes.length > 0 && (
                         <small className="jurisd">{fr.jurisdicoes.join(' | ')}</small>
                       )}
@@ -492,15 +563,21 @@ export default function App() {
           ) : (
             <>
               <section className="card risco-banner" style={{ borderLeftColor: COR_RISCO[ultimaPrev.nivel_risco] }}>
-                <div>
-                  <span className="muted">Boletim Oficial — {ultimaPrev.municipio} ({ultimaPrev.data_referencia})</span>
-                  <h2 style={{ color: COR_RISCO[ultimaPrev.nivel_risco] }}>
-                    <ShieldAlert size={22} /> NÍVEL DE RISCO: {ultimaPrev.nivel_risco}
-                  </h2>
-                  <small className="muted">
-                    Modelo: {ultimaPrev.modelo_utilizado} • Prob. Dia Crítico (≥5 focos em 24h):{' '}
-                    <strong>{(ultimaPrev.prob_dia_critico_d1 * 100).toFixed(1)}%</strong>
-                  </small>
+                <div className="risco-row">
+                  <div>
+                    <span className="muted">Boletim Oficial — {ultimaPrev.municipio} ({ultimaPrev.data_referencia})</span>
+                    <h2 style={{ color: COR_RISCO[ultimaPrev.nivel_risco] }}>
+                      <ShieldAlert size={22} /> NÍVEL DE RISCO: {ultimaPrev.nivel_risco}
+                    </h2>
+                    <small className="muted">
+                      Modelo: {ultimaPrev.modelo_utilizado} • Prob. Dia Crítico (≥5 focos em 24h):{' '}
+                      <strong>{(ultimaPrev.prob_dia_critico_d1 * 100).toFixed(1)}%</strong>
+                    </small>
+                  </div>
+                  <button className="btn-pdf" onClick={handleEmitirPDF} disabled={gerandoPdf}>
+                    <FileText size={16} />
+                    {gerandoPdf ? 'Gerando PDF...' : 'Emitir Boletim Oficial (PDF)'}
+                  </button>
                 </div>
               </section>
 
@@ -527,16 +604,42 @@ export default function App() {
               </section>
 
               <section className="card">
-                <h3>Trajetória Preditiva D+1 e Banda de Incerteza Conformal (95%)</h3>
-                <div style={{ width: '100%', height: 240 }}>
+                <h3><Activity size={16} /> Explicabilidade Física do Dia (XAI)</h3>
+                <div className="xai-chips">
+                  <span className="xai-chip">Focos S-NPP ontem: <strong>{String(xai.focos_ontem_snpp ?? '—')}</strong></span>
+                  <span className="xai-chip">UR mín. prevista D+1: <strong>{String(xai.ur_min_prevista_d1 ?? '—')}%</strong></span>
+                  <span className="xai-chip">Chuva prevista 72h: <strong>{String(xai.chuva_prevista_72h_mm ?? '—')} mm</strong></span>
+                  <span className="xai-chip">Δ Solo 7d: <strong>{String(xai.delta_solo_7d_pct ?? '—')}%</strong></span>
+                  <span className={`xai-chip ${xai.fim_de_semana_d1 ? 'alerta' : ''}`}>
+                    Ciclo antrópico: <strong>{xai.fim_de_semana_d1 ? 'Fim de semana (Sex–Dom)' : 'Dia útil'}</strong>
+                  </span>
+                </div>
+              </section>
+
+              <section className="card">
+                <h3>Série Real (14 dias — VIIRS S-NPP) + Projeção CurupiraNet v2 (72h)</h3>
+                <div style={{ width: '100%', height: 270 }}>
                   <ResponsiveContainer>
-                    <ComposedChart data={dadosGrafico}>
+                    <ComposedChart data={dadosGraficoContinuo}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                      <XAxis dataKey="data" stroke="#94a3b8" />
-                      <YAxis stroke="#94a3b8" />
-                      <Tooltip />
-                      <Area type="monotone" dataKey="icSup" fill="#38bdf8" fillOpacity={0.2} stroke="none" name="IC 95% Sup" />
-                      <Line type="monotone" dataKey="d1" stroke="#f97316" strokeWidth={2.5} name="Previsto D+1" />
+                      <XAxis dataKey="label" stroke="#94a3b8" fontSize={11} />
+                      <YAxis stroke="#94a3b8" fontSize={11} />
+                      <Tooltip
+                        contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }}
+                        formatter={(value, name, item) => {
+                          if (name === 'IC 95% (teto visual)' && item?.payload?.icSupReal !== undefined) {
+                            return [`${Number(item.payload.icSupReal).toFixed(1)} focos`, 'IC 95% Sup. (Real)'];
+                          }
+                          return [value, name];
+                        }}
+                      />
+                      <Legend />
+                      {dataDivisoria && (
+                        <ReferenceLine x={dataDivisoria} stroke="#94a3b8" strokeDasharray="4 4" label={{ value: 'Hoje', fill: '#94a3b8', fontSize: 11 }} />
+                      )}
+                      <Area type="monotone" dataKey="icSupVisual" fill="#38bdf8" fillOpacity={0.18} stroke="none" name="IC 95% (teto visual)" />
+                      <Line type="monotone" dataKey="observado" stroke="#38bdf8" strokeWidth={2.5} dot={{ r: 3 }} name="Observado (VIIRS S-NPP)" />
+                      <Line type="monotone" dataKey="previsto" stroke="#f97316" strokeWidth={2.5} strokeDasharray="6 3" dot={{ r: 4 }} name="Previsão IA (72h)" />
                     </ComposedChart>
                   </ResponsiveContainer>
                 </div>

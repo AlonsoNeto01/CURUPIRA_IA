@@ -74,3 +74,13 @@ export interface PrevisaoIA {
   f1_validacao: number;
   atualizado_em: string;
 }
+
+export interface SerieDiariaItem {
+  id: number;
+  codigo_ibge: string;
+  data: string;
+  total_focos_snpp: number;
+  frp_total_snpp: number;
+  nesterov_raw: number;
+  dry_spell: number;
+}

@@ -80,3 +80,25 @@ input, select, textarea {
 @media (max-width: 900px) {
   .grid-main, .cards-3, .cards-4 { grid-template-columns: 1fr; }
 }
+
+.head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.seg-group { display: inline-flex; background: #0f172a; border: 1px solid #334155; border-radius: 8px; overflow: hidden; }
+.seg-btn {
+  padding: 6px 10px; border: none; background: transparent; color: #94a3b8;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.seg-btn.on { background: #ea580c; color: #ffffff; }
+.risco-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; }
+.btn-pdf {
+  display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px;
+  border-radius: 9px; border: 1px solid #38bdf8; background: #0c4a6e; color: #e0f2fe;
+  font-weight: 600; font-size: 13px; cursor: pointer;
+}
+.btn-pdf:hover { background: #0369a1; }
+.btn-pdf:disabled { opacity: 0.6; cursor: wait; }
+.xai-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.xai-chip {
+  padding: 6px 10px; border-radius: 8px; background: #0f172a;
+  border: 1px solid #334155; font-size: 12.5px; color: #cbd5e1;
+}
+.xai-chip.alerta { border-color: #f97316; background: #431407; color: #fed7aa; }
