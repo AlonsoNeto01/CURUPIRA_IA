@@ -170,7 +170,7 @@ export default {
       if (!env.SYNC_TOKEN || auth !== `Bearer ${env.SYNC_TOKEN}`) {
         return Response.json({ error: "Não autorizado" }, { status: 401 });
       }
-      const dias = Math.min(5, Math.max(1, Number(url.searchParams.get("dias") || "2")));
+      const dias = Math.min(10, Math.max(1, Number(url.searchParams.get("dias") || "2")));
       const resumo = await sincronizarTodosMunicipios(env, dias);
       return Response.json({ status: "sincronizado", dias, inseridos_por_municipio: resumo });
     }

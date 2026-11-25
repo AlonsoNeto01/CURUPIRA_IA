@@ -83,33 +83,88 @@ def coletar_clima_e_nwp(pontos_grade: list) -> pd.DataFrame:
     return df_clima.sort_values("data").ffill().bfill().reset_index(drop=True)
 
 
+SENSORES_VIIRS_375M = ["VIIRS_SNPP", "VIIRS_NOAA20", "VIIRS_NOAA21"]
+
+
 def obter_focos_snpp_recentes(codigo_ibge: str, data_inicio: str) -> pd.DataFrame:
-    """Agrega exclusivamente focos VIIRS S-NPP (paridade com o treino) no fuso America/Belem."""
-    res = (
-        sb.table("focos_incendio")
-        .select("frp_mw, registado_em, confianca")
-        .eq("codigo_ibge", codigo_ibge)
-        .eq("satelite", "VIIRS_SNPP")
-        .neq("confianca", "BAIXA")
-        .gte("registado_em", f"{data_inicio}T00:00:00-03:00")
-        .execute()
-    )
-    rows = res.data or []
-    if not rows:
-        return pd.DataFrame({
+    """
+    Retorna a série diária na escala equivalente a 1 sensor VIIRS 375 m:
+    - Prioriza VIIRS_SNPP quando disponível no dia;
+    - Caso SNPP esteja ausente (outage NRT), usa a média dos sensores VIIRS 375 m
+      ativos no dia (NOAA-20 / NOAA-21), evitando dupla contagem (~2x).
+    """
+    corte = f"{data_inicio}T00:00:00-03:00"
+
+    rows = []
+    offset = 0
+    while True:
+        res = (
+            sb.table("focos_incendio")
+            .select("registado_em, frp_mw, satelite")
+            .eq("codigo_ibge", codigo_ibge)
+            .in_("satelite", SENSORES_VIIRS_375M)
+            .neq("confianca", "BAIXA")
+            .gte("registado_em", corte)
+            .range(offset, offset + 999)
+            .execute()
+        )
+        batch = res.data or []
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
+        offset += 1000
+
+    vazio = pd.DataFrame(
+        {
             "data": pd.Series(dtype="object"),
             "total_focos_snpp": pd.Series(dtype="int64"),
             "frp_total_snpp": pd.Series(dtype="float64"),
-        })
+        }
+    )
+    if not rows:
+        return vazio
 
     df = pd.DataFrame(rows)
-    ts = pd.to_datetime(df["registado_em"], utc=True).dt.tz_convert(TZ_BELEM)
-    df["data"] = ts.dt.strftime("%Y-%m-%d")
-    df["frp_mw"] = pd.to_numeric(df["frp_mw"], errors="coerce").fillna(0.0)
-    return df.groupby("data", as_index=False).agg(
-        total_focos_snpp=("frp_mw", "count"),
-        frp_total_snpp=("frp_mw", "sum"),
+    df["data"] = (
+        pd.to_datetime(df["registado_em"], utc=True, errors="coerce")
+        .dt.tz_convert("America/Belem")
+        .dt.strftime("%Y-%m-%d")
     )
+    df["frp_mw"] = pd.to_numeric(df["frp_mw"], errors="coerce").fillna(0.0).astype(np.float64)
+    df = df.dropna(subset=["data"])
+    if df.empty:
+        return vazio
+
+    por_sat = (
+        df.groupby(["data", "satelite"], as_index=False)
+        .agg(focos=("frp_mw", "size"), frp=("frp_mw", "sum"))
+    )
+
+    saida = []
+    for data_dia, grp in por_sat.groupby("data"):
+        snpp = grp[grp["satelite"] == "VIIRS_SNPP"]
+        if len(snpp) > 0 and int(snpp["focos"].iloc[0]) > 0:
+            total_eq = int(snpp["focos"].iloc[0])
+            frp_eq = float(snpp["frp"].iloc[0])
+        else:
+            total_eq = int(round(float(grp["focos"].mean())))
+            frp_eq = float(grp["frp"].mean())
+
+        saida.append(
+            {
+                "data": str(data_dia),
+                "total_focos_snpp": total_eq,
+                "frp_total_snpp": frp_eq,
+            }
+        )
+
+    if not saida:
+        return vazio
+
+    out = pd.DataFrame(saida)
+    out["total_focos_snpp"] = out["total_focos_snpp"].astype(np.int64)
+    out["frp_total_snpp"] = out["frp_total_snpp"].astype(np.float64)
+    return out
 
 
 def obter_estado_previo_nesterov(codigo_ibge: str, data_primeira_janela: str) -> tuple[float, int]:
