@@ -1,0 +1,32 @@
+name: Curupira IA — Inferência Diária 72h (Global Pará)
+
+on:
+  schedule:
+    # 09:00 UTC = 06:00 no horário de Belém/Oriximiná (todos os dias)
+    - cron: "0 9 * * *"
+  workflow_dispatch: # Permite clicar em "Run workflow" manualmente para testar agora
+
+jobs:
+  inferencia-diaria:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: "ml-worker/requirements.txt"
+
+      - name: Instalar dependências leves (TensorFlow CPU)
+        run: pip install -r ml-worker/requirements.txt
+
+      - name: Executar inferência CurupiraNet v2 Global Pará
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python ml-worker/predict_daily.py
