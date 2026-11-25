@@ -37,6 +37,16 @@ def engenharia_biofisica(
     d["data_dt"] = pd.to_datetime(d["data"])
     d = d.sort_values("data_dt").reset_index(drop=True)
 
+    colunas_num = [
+        "total_focos_snpp", "frp_total_snpp", "temp_max", "temp_media",
+        "temp_orvalho", "ur_min", "ur_media", "precipitacao_mm",
+        "vento_max_kmh", "radiacao_mj", "et0_mm",
+        "umidade_solo_0_7", "umidade_solo_7_28",
+    ]
+    for col in colunas_num:
+        if col in d.columns:
+            d[col] = pd.to_numeric(d[col], errors="coerce").fillna(0.0).astype(np.float64)
+
     # 1. VPD (Equação de Tetens, kPa) e Angström (para painel da Defesa Civil)
     d["vpd_kpa"] = calcular_vpd(d["temp_max"].values, d["ur_min"].values)
     d["indice_angstrom"] = (d["ur_min"] / 20.0) + ((27.0 - d["temp_max"]) / 10.0)
@@ -57,7 +67,7 @@ def engenharia_biofisica(
         g_ant = g_atual
 
     d["nesterov_raw"] = nesterov
-    d["nesterov_log"] = np.log1p(nesterov)
+    d["nesterov_log"] = np.log1p(np.asarray(nesterov, dtype=np.float64))
 
     # 3. Balanço Hídrico 14 dias e Dry Spell com continuidade
     d["balanco_hidrico_14d"] = (d["precipitacao_mm"] - d["et0_mm"]).rolling(14, min_periods=1).sum()
@@ -82,10 +92,10 @@ def engenharia_biofisica(
     d["semana_cos"] = np.cos(2.0 * np.pi * dia_sem / 7.0)
 
     # 6. Memória causal de focos e FRP (estritamente VIIRS S-NPP)
-    d["focos_log"] = np.log1p(d["total_focos_snpp"])
+    d["focos_log"] = np.log1p(d["total_focos_snpp"].to_numpy(dtype=np.float64))
     d["focos_ema3_log"] = d["focos_log"].ewm(span=3, adjust=False).mean()
     d["focos_ema7_log"] = d["focos_log"].ewm(span=7, adjust=False).mean()
-    d["frp_log"] = np.log1p(d["frp_total_snpp"])
+    d["frp_log"] = np.log1p(d["frp_total_snpp"].to_numpy(dtype=np.float64))
     d["frp_ema3_log"] = d["frp_log"].ewm(span=3, adjust=False).mean()
 
     return d

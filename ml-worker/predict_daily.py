@@ -95,7 +95,11 @@ def obter_focos_snpp_recentes(codigo_ibge: str, data_inicio: str) -> pd.DataFram
     )
     rows = res.data or []
     if not rows:
-        return pd.DataFrame(columns=["data", "total_focos_snpp", "frp_total_snpp"])
+        return pd.DataFrame({
+            "data": pd.Series(dtype="object"),
+            "total_focos_snpp": pd.Series(dtype="int64"),
+            "frp_total_snpp": pd.Series(dtype="float64"),
+        })
 
     df = pd.DataFrame(rows)
     ts = pd.to_datetime(df["registado_em"], utc=True).dt.tz_convert(TZ_BELEM)
@@ -220,8 +224,12 @@ def main():
         # Junta focos VIIRS S-NPP do período passado
         df_focos = obter_focos_snpp_recentes(cod, df_passado["data"].iloc[0])
         df_passado = df_passado.merge(df_focos, on="data", how="left")
-        df_passado["total_focos_snpp"] = df_passado["total_focos_snpp"].fillna(0).astype(int)
-        df_passado["frp_total_snpp"] = df_passado["frp_total_snpp"].fillna(0.0)
+        df_passado["total_focos_snpp"] = (
+            pd.to_numeric(df_passado["total_focos_snpp"], errors="coerce").fillna(0).astype(np.int64)
+        )
+        df_passado["frp_total_snpp"] = (
+            pd.to_numeric(df_passado["frp_total_snpp"], errors="coerce").fillna(0.0).astype(np.float64)
+        )
 
         nest_ini, ds_ini = obter_estado_previo_nesterov(cod, df_passado["data"].iloc[0])
         df_feat = engenharia_biofisica(df_passado, nest_ini, ds_ini)
