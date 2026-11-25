@@ -35,14 +35,10 @@ function somarDiasISO(dataISO: string, dias: number): string {
   return dt.toISOString().slice(5, 10);
 }
 
-function obterFaixaIC80(prev: number, sup95: number, inf80?: unknown, sup80?: unknown): [number, number] {
-  if (typeof inf80 === 'number' && typeof sup80 === 'number') {
-    return [inf80, sup80];
-  }
-  const mu = Math.log1p(Math.max(0, prev));
-  const r95 = Math.max(0, Math.log1p(Math.max(prev, sup95)) - mu);
-  const r80 = r95 * 0.26;
-  return [Math.expm1(Math.max(0, mu - r80)), Math.expm1(mu + r80)];
+function fmtIC95(inf: number, sup: number): string {
+  return sup > 500
+    ? `${inf.toFixed(1)} – >500 (extremo: ${sup.toFixed(0)})`
+    : `${inf.toFixed(1)} – ${sup.toFixed(1)}`;
 }
 
 export default function App() {
@@ -364,15 +360,10 @@ export default function App() {
         pontos[pontos.length - 1].previsto = pontos[pontos.length - 1].observado;
       }
 
-      const xf = ultimaPrev.xai_fatores || {};
-      const [, sup80_1] = obterFaixaIC80(Number(ultimaPrev.focos_previstos_d1), Number(ultimaPrev.ic_sup_d1), xf.ic80_inf_d1, xf.ic80_sup_d1);
-      const [, sup80_2] = obterFaixaIC80(Number(ultimaPrev.focos_previstos_d2), Number(ultimaPrev.ic_sup_d2), xf.ic80_inf_d2, xf.ic80_sup_d2);
-      const [, sup80_3] = obterFaixaIC80(Number(ultimaPrev.focos_previstos_d3), Number(ultimaPrev.ic_sup_d3), xf.ic80_inf_d3, xf.ic80_sup_d3);
-
       const horizontes = [
-        { dia: 0, tag: 'D+1', val: Number(ultimaPrev.focos_previstos_d1), sup: sup80_1 },
-        { dia: 1, tag: 'D+2', val: Number(ultimaPrev.focos_previstos_d2), sup: sup80_2 },
-        { dia: 2, tag: 'D+3', val: Number(ultimaPrev.focos_previstos_d3), sup: sup80_3 },
+        { dia: 0, tag: 'D+1', val: Number(ultimaPrev.focos_previstos_d1), sup: Number(ultimaPrev.ic_sup_d1) },
+        { dia: 1, tag: 'D+2', val: Number(ultimaPrev.focos_previstos_d2), sup: Number(ultimaPrev.ic_sup_d2) },
+        { dia: 2, tag: 'D+3', val: Number(ultimaPrev.focos_previstos_d3), sup: Number(ultimaPrev.ic_sup_d3) },
       ];
 
       for (const h of horizontes) {
@@ -621,29 +612,14 @@ export default function App() {
 
               <section className="cards-3">
                 {[
-                  {
-                    lbl: 'D+1 (24 horas)',
-                    val: Number(ultimaPrev.focos_previstos_d1),
-                    faixa: obterFaixaIC80(Number(ultimaPrev.focos_previstos_d1), Number(ultimaPrev.ic_sup_d1), xai.ic80_inf_d1, xai.ic80_sup_d1),
-                    prob: ultimaPrev.prob_dia_critico_d1,
-                  },
-                  {
-                    lbl: 'D+2 (48 horas)',
-                    val: Number(ultimaPrev.focos_previstos_d2),
-                    faixa: obterFaixaIC80(Number(ultimaPrev.focos_previstos_d2), Number(ultimaPrev.ic_sup_d2), xai.ic80_inf_d2, xai.ic80_sup_d2),
-                    prob: ultimaPrev.prob_dia_critico_d2,
-                  },
-                  {
-                    lbl: 'D+3 (72 horas)',
-                    val: Number(ultimaPrev.focos_previstos_d3),
-                    faixa: obterFaixaIC80(Number(ultimaPrev.focos_previstos_d3), Number(ultimaPrev.ic_sup_d3), xai.ic80_inf_d3, xai.ic80_sup_d3),
-                    prob: ultimaPrev.prob_dia_critico_d3,
-                  },
+                  { lbl: 'D+1 (24 horas)', val: ultimaPrev.focos_previstos_d1, inf: ultimaPrev.ic_inf_d1, sup: ultimaPrev.ic_sup_d1, prob: ultimaPrev.prob_dia_critico_d1 },
+                  { lbl: 'D+2 (48 horas)', val: ultimaPrev.focos_previstos_d2, inf: ultimaPrev.ic_inf_d2, sup: ultimaPrev.ic_sup_d2, prob: ultimaPrev.prob_dia_critico_d2 },
+                  { lbl: 'D+3 (72 horas)', val: ultimaPrev.focos_previstos_d3, inf: ultimaPrev.ic_inf_d3, sup: ultimaPrev.ic_sup_d3, prob: ultimaPrev.prob_dia_critico_d3 },
                 ].map((c) => (
                   <div className="card kpi" key={c.lbl}>
                     <span className="muted">{c.lbl}</span>
-                    <strong>{c.val.toFixed(1)} focos</strong>
-                    <small>Faixa Operacional (IC 80%): {c.faixa[0].toFixed(1)} – {c.faixa[1].toFixed(1)}</small>
+                    <strong>{Number(c.val).toFixed(1)} focos</strong>
+                    <small>IC 95% Conformal: {fmtIC95(Number(c.inf), Number(c.sup))}</small>
                     <small>Chance Dia Crítico: {(Number(c.prob) * 100).toFixed(0)}%</small>
                   </div>
                 ))}
@@ -656,10 +632,11 @@ export default function App() {
                     <small className="muted">Hexágonos 6 km • Reincidência 8 anos + Vento + Clima</small>
                   </div>
                   <div className="hex-legend">
-                    <span><i style={{ background: '#eab308' }} /> 35–55 Moderado</span>
-                    <span><i style={{ background: '#f97316' }} /> 55–75 Alto</span>
-                    <span><i style={{ background: '#ef4444' }} /> 75–90 Crítico</span>
-                    <span><i style={{ background: '#7f1d1d', border: '1px solid #fca5a5' }} /> 90+ Epicentro</span>
+                    <span><i style={{ background: '#eab308' }} /> 35–58 Moderado</span>
+                    <span><i style={{ background: '#f97316' }} /> 58–78 Alto</span>
+                    <span><i style={{ background: '#ef4444' }} /> 78–90 Crítico</span>
+                    <span><i style={{ background: '#991b1b' }} /> 90–97 Severo</span>
+                    <span><i style={{ background: '#450a0a', border: '1px solid #fca5a5' }} /> 97+ Epicentro</span>
                   </div>
                   <MapaRiscoIA
                     municipio={municipioAtual}
@@ -670,7 +647,7 @@ export default function App() {
                   {zonaAlvo && (
                     <div className="compass-box">
                       <strong>
-                        Setor Selecionado — Risco {zonaAlvo.score_risco >= 90 ? 'EPICENTRO CRÍTICO' : zonaAlvo.nivel_risco} ({Number(zonaAlvo.score_risco).toFixed(1)}/100)
+                        Setor Selecionado — Risco {zonaAlvo.nivel_risco} ({Number(zonaAlvo.score_risco).toFixed(1)}/100)
                       </strong>
                       <div>{zonaAlvo.motivo_principal}</div>
                       <div>
@@ -701,8 +678,8 @@ export default function App() {
                         >
                           <div className="frente-top">
                             <strong>Setor #{idx + 1} • Score {Number(z.score_risco).toFixed(1)}</strong>
-                            <span className={`badge ${z.score_risco >= 90 ? 'EPICENTRO' : z.nivel_risco === 'CRÍTICO' ? 'CRÍTICA' : z.nivel_risco === 'ALTO' ? 'ALTA' : 'MODERADA'}`}>
-                              {z.score_risco >= 90 ? 'EPICENTRO' : z.nivel_risco}
+                            <span className={`badge ${z.nivel_risco === 'CRÍTICO' ? 'CRÍTICA' : z.nivel_risco === 'ALTO' ? 'ALTA' : 'MODERADA'}`}>
+                              {z.nivel_risco}
                             </span>
                           </div>
                           <small>{z.motivo_principal}</small>
@@ -747,8 +724,8 @@ export default function App() {
                       <Tooltip
                         contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }}
                         formatter={(value, name, item) => {
-                          if (name === 'Faixa Operacional (IC 80%)' && item?.payload?.icSupReal !== undefined) {
-                            return [`${Number(item.payload.icSupReal).toFixed(1)} focos`, 'Teto IC 80%'];
+                          if (name === 'IC 95% (teto visual)' && item?.payload?.icSupReal !== undefined) {
+                            return [`${Number(item.payload.icSupReal).toFixed(1)} focos`, 'IC 95% Sup. (Real)'];
                           }
                           return [value, name];
                         }}
@@ -757,7 +734,7 @@ export default function App() {
                       {dataDivisoria && (
                         <ReferenceLine x={dataDivisoria} stroke="#94a3b8" strokeDasharray="4 4" label={{ value: 'Hoje', fill: '#94a3b8', fontSize: 11 }} />
                       )}
-                      <Area type="monotone" dataKey="icSupVisual" fill="#38bdf8" fillOpacity={0.18} stroke="none" name="Faixa Operacional (IC 80%)" />
+                      <Area type="monotone" dataKey="icSupVisual" fill="#38bdf8" fillOpacity={0.18} stroke="none" name="IC 95% (teto visual)" />
                       <Line type="monotone" dataKey="observado" stroke="#38bdf8" strokeWidth={2.5} dot={{ r: 3 }} name="Observado (VIIRS S-NPP)" />
                       <Line type="monotone" dataKey="previsto" stroke="#f97316" strokeWidth={2.5} strokeDasharray="6 3" dot={{ r: 4 }} name="Previsão IA (72h)" />
                     </ComposedChart>

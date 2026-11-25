@@ -231,25 +231,26 @@ def calcular_e_gravar_risco_espacial(
         + float(payload_ia.get("focos_previstos_d3") or 0.0)
     )
 
-    # Intensidade municipal vinda da rede neural [0.50 .. 1.12]
-    mod_ia = 0.50 + 0.62 * max(prob_crit_d1, min(1.0, focos_72h_tot / 45.0))
+    # Intensidade municipal vinda da rede neural [0.45 .. 1.15]
+    mod_ia = 0.45 + 0.70 * max(prob_crit_d1, min(1.0, focos_72h_tot / 35.0))
 
-    # Destaque relativo do epicentro dentro da mancha ativa do município
-    e_p99 = float(np.percentile(energia_contagio[energia_contagio > 0], 99)) if np.any(energia_contagio > 0) else 1.0
-    fator_epicentro = np.clip(energia_contagio / max(e_p99, 4.0), 0.0, 1.15) ** 0.70
+    # Combinação física: reincidência + contágio direcional + microclima seco
+    score_bruto = (0.42 * fator_reinc + 0.38 * fator_contagio + 0.20 * fator_micro) * mod_ia
+    score_bruto = np.maximum(score_bruto, 0.85 * fator_contagio * (0.5 + 0.5 * secura_chuva))
 
-    # Combinação física contínua + compressão assintótica suave (35–55 Moderado | 55–75 Alto | 75–90 Crítico | 90–98 Epicentro)
-    impulso = (
-        0.34 * fator_reinc
-        + 0.34 * fator_contagio
-        + 0.16 * fator_micro
-        + 0.28 * fator_epicentro * secura_chuva
-    ) * mod_ia
-    score_pct = 98.6 * (1.0 - np.exp(-2.25 * impulso))
+    # Compressão suave acima de 0.75 para evitar saturação/empate em 100
+    # Valores <= 0.75 ficam lineares; acima de 0.75 assintotam suavemente até 99.5
+    excesso = np.maximum(0.0, score_bruto - 0.75)
+    score_suave = np.where(
+        score_bruto <= 0.75,
+        score_bruto * 100.0,
+        75.0 + 24.5 * (1.0 - np.exp(-excesso / 0.35)),
+    )
+    score_pct = np.clip(score_suave, 0.0, 99.5)
 
-    # Ordenação com desempate determinístico por energia radiativa/contágio e reincidência
-    ordem = np.lexsort((-sazonal_raw, -energia_contagio, -score_pct))
-    selecionados = [int(i) for i in ordem if score_pct[i] >= 35.0][:80]
+    # Ordenação com desempate determinístico: score -> contágio -> reincidência
+    chaves_ordem = np.lexsort((-fator_reinc, -fator_contagio, -score_pct))
+    selecionados = [int(i) for i in chaves_ordem if score_pct[i] >= 35.0][:80]
 
     # Limpa gravações anteriores do mesmo dia/município para manter mapa limpo
     sb.table("risco_espacial_72h").delete().eq("codigo_ibge", codigo_ibge).eq("data_referencia", data_ref).execute()
@@ -265,7 +266,7 @@ def calcular_e_gravar_risco_espacial(
     registros = []
     for k, i in enumerate(selecionados):
         sc = float(score_pct[i])
-        nivel = "CRÍTICO" if sc >= 75.0 else ("ALTO" if sc >= 55.0 else "MODERADO")
+        nivel = "CRÍTICO" if sc >= 82.0 else ("ALTO" if sc >= 60.0 else "MODERADO")
         rumo_prop = _rumo_cardeal(float(vento_to_hex[i]))
 
         # Explicação física legível para a Defesa Civil e PDF
@@ -288,7 +289,7 @@ def calcular_e_gravar_risco_espacial(
                 "data_referencia": data_ref,
                 "centro_lat": round(float(hex_lats[i]), 5),
                 "centro_lon": round(float(hex_lons[i]), 5),
-                "score_risco": round(sc, 2),
+                "score_risco": round(sc, 1),
                 "nivel_risco": nivel,
                 "focos_esperados_72h": round(float(focos_72h_tot * pesos_dist[k]), 2),
                 "fator_reincidencia": round(float(fator_reinc[i] * 100.0), 1),

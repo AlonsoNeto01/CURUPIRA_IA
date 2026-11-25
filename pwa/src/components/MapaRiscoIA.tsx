@@ -56,16 +56,17 @@ export function MapaRiscoIA({ municipio, zonas, zonaSelecionada, onSelectZona }:
             'interpolate',
             ['linear'],
             ['get', 'score_risco'],
-            35, '#eab308',
-            55, '#f97316',
-            75, '#ef4444',
-            90, '#7f1d1d',
+            35, '#eab308',   // Moderado (Amarelo)
+            58, '#f97316',   // Alto (Laranja)
+            78, '#ef4444',   // Crítico (Vermelho)
+            90, '#991b1b',   // Crítico Severo (Vermelho escuro)
+            97, '#450a0a',   // Epicentro (Vinho escuro)
           ],
           'fill-opacity': [
             'case',
             ['==', ['get', 'selecionado'], true],
             0.82,
-            0.58,
+            0.55,
           ],
         },
       });
