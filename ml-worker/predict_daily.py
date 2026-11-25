@@ -11,6 +11,7 @@ from tensorflow import keras
 from supabase import create_client
 
 from features import adaptar_umidade_solo_forecast, calcular_vpd, engenharia_biofisica
+from spatial_risk import calcular_e_gravar_risco_espacial
 
 TZ_BELEM = ZoneInfo("America/Belem")
 LOOKBACK = 14
@@ -347,6 +348,7 @@ def main():
         }
 
         sb.table("previsoes_ia").upsert(payload, on_conflict="codigo_ibge,data_referencia").execute()
+        calcular_e_gravar_risco_espacial(sb, cod, nome, pontos, payload)
         enviar_alerta_telegram(cod, payload)
         print(
             f"   ✅ {nome}: D+1={payload['focos_previstos_d1']} "

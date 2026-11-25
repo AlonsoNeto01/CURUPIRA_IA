@@ -1,5 +1,11 @@
 import Dexie, { type Table } from 'dexie';
-import type { FocoIncendio, MunicipioIBGE, PrevisaoIA, SerieDiariaItem } from './supabase';
+import type {
+  FocoIncendio,
+  MunicipioIBGE,
+  PrevisaoIA,
+  SerieDiariaItem,
+  ZonaRiscoEspacial,
+} from './supabase';
 
 export interface OcorrenciaOutbox {
   local_id?: number;
@@ -18,15 +24,17 @@ class CurupiraOfflineDB extends Dexie {
   focos!: Table<FocoIncendio, string>;
   previsoes!: Table<PrevisaoIA, number>;
   serieDiaria!: Table<SerieDiariaItem, number>;
+  zonasRisco!: Table<ZonaRiscoEspacial, number>;
   outboxCampo!: Table<OcorrenciaOutbox, number>;
 
   constructor() {
     super('CurupiraOfflineDB');
-    this.version(2).stores({
+    this.version(3).stores({
       municipios: 'codigo_ibge',
       focos: 'id, codigo_ibge, registado_em',
       previsoes: 'id, codigo_ibge, data_referencia',
       serieDiaria: 'id, codigo_ibge, data',
+      zonasRisco: 'id, codigo_ibge, score_risco',
       outboxCampo: '++local_id, codigo_ibge, registado_em',
     });
   }

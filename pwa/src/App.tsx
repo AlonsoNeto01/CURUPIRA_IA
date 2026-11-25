@@ -7,12 +7,13 @@ import {
   ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, Legend
 } from 'recharts';
 import {
-  supabase, type FocoIncendio, type MunicipioIBGE, type PerfilUsuario, type PrevisaoIA, type SerieDiariaItem
+  supabase, type FocoIncendio, type MunicipioIBGE, type PerfilUsuario, type PrevisaoIA, type SerieDiariaItem, type ZonaRiscoEspacial
 } from './lib/supabase';
 import { offlineDB } from './lib/db';
 import { calcularNavegacao, gerarFrentesDBSCAN, paraGMS, type FrenteCombate } from './lib/geoprocessing';
 import { emitirBoletimOficialPDF } from './lib/boletimPdf';
 import { MapaTatico } from './components/MapaTatico';
+import { MapaRiscoIA } from './components/MapaRiscoIA';
 
 const COR_RISCO: Record<string, string> = {
   BAIXO: '#22c55e',
@@ -50,6 +51,8 @@ export default function App() {
   const [focos, setFocos] = useState<FocoIncendio[]>([]);
   const [previsoes, setPrevisoes] = useState<PrevisaoIA[]>([]);
   const [serieDiaria, setSerieDiaria] = useState<SerieDiariaItem[]>([]);
+  const [zonasRisco, setZonasRisco] = useState<ZonaRiscoEspacial[]>([]);
+  const [zonaAlvo, setZonaAlvo] = useState<ZonaRiscoEspacial | null>(null);
   const [pendentesOutbox, setPendentesOutbox] = useState(0);
   const [gerandoPdf, setGerandoPdf] = useState(false);
 
@@ -158,7 +161,7 @@ export default function App() {
         }
       }
 
-      const [resFocos, resPrev, resSerie] = await Promise.all([
+      const [resFocos, resPrev, resSerie, resZonas] = await Promise.all([
         supabase
           .from('focos_incendio')
           .select('*')
@@ -178,6 +181,13 @@ export default function App() {
           .eq('codigo_ibge', ibgeAtivo)
           .order('data', { ascending: false })
           .limit(14),
+        supabase
+          .from('risco_espacial_72h')
+          .select('*')
+          .eq('codigo_ibge', ibgeAtivo)
+          .order('data_referencia', { ascending: false })
+          .order('score_risco', { ascending: false })
+          .limit(80),
       ]);
 
       if (resFocos.data) {
@@ -196,21 +206,33 @@ export default function App() {
         await offlineDB.serieDiaria.where('codigo_ibge').equals(ibgeAtivo).delete();
         await offlineDB.serieDiaria.bulkPut(ordenada);
       }
+      if (resZonas.data) {
+        const maisRecente = resZonas.data[0]?.data_referencia;
+        const doDia = maisRecente
+          ? (resZonas.data as ZonaRiscoEspacial[]).filter((z) => z.data_referencia === maisRecente)
+          : [];
+        setZonasRisco(doDia);
+        await offlineDB.zonasRisco.where('codigo_ibge').equals(ibgeAtivo).delete();
+        if (doDia.length) await offlineDB.zonasRisco.bulkPut(doDia);
+      }
     } else {
-      const [fLoc, pLoc, sLoc] = await Promise.all([
+      const [fLoc, pLoc, sLoc, zLoc] = await Promise.all([
         offlineDB.focos.where('codigo_ibge').equals(ibgeAtivo).toArray(),
         offlineDB.previsoes.where('codigo_ibge').equals(ibgeAtivo).toArray(),
         offlineDB.serieDiaria.where('codigo_ibge').equals(ibgeAtivo).toArray(),
+        offlineDB.zonasRisco.where('codigo_ibge').equals(ibgeAtivo).toArray(),
       ]);
       setFocos(fLoc.filter((f) => f.registado_em >= corteISO));
       setPrevisoes(pLoc.sort((a, b) => b.data_referencia.localeCompare(a.data_referencia)));
       setSerieDiaria(sLoc.sort((a, b) => a.data.localeCompare(b.data)));
+      setZonasRisco(zLoc.sort((a, b) => b.score_risco - a.score_risco));
     }
     setPendentesOutbox(await offlineDB.outboxCampo.count());
   }
 
   useEffect(() => {
     setFrenteAlvo(null);
+    setZonaAlvo(null);
     sincronizarDadosMunicipio();
   }, [perfil, ibgeAtivo, janelaHoras, online]);
 
@@ -362,6 +384,7 @@ export default function App() {
         frentes,
         janelaHoras,
         totalFocosJanela: focos.length,
+        zonasRisco,
       });
     } finally {
       setGerandoPdf(false);
@@ -594,6 +617,67 @@ export default function App() {
                     <small>Chance Dia Crítico: {(Number(c.prob) * 100).toFixed(0)}%</small>
                   </div>
                 ))}
+              </section>
+
+              <section className="grid-main">
+                <div className="card">
+                  <div className="card-head">
+                    <h2>Mapa de Zonas com Maior Probabilidade de Fogo (Próximas 72h)</h2>
+                    <small className="muted">Hexágonos 6 km • Reincidência 8 anos + Vento + Clima</small>
+                  </div>
+                  <MapaRiscoIA
+                    municipio={municipioAtual}
+                    zonas={zonasRisco}
+                    zonaSelecionada={zonaAlvo}
+                    onSelectZona={setZonaAlvo}
+                  />
+                  {zonaAlvo && (
+                    <div className="compass-box">
+                      <strong>
+                        Setor Selecionado — Risco {zonaAlvo.nivel_risco} ({Number(zonaAlvo.score_risco).toFixed(0)}/100)
+                      </strong>
+                      <div>{zonaAlvo.motivo_principal}</div>
+                      <div>
+                        GMS: <code>{paraGMS(zonaAlvo.centro_lat, 'lat')}</code> |{' '}
+                        <code>{paraGMS(zonaAlvo.centro_lon, 'lon')}</code> • Vento:{' '}
+                        <strong>{Number(zonaAlvo.velocidade_vento_kmh).toFixed(0)} km/h</strong> • Chuva 72h:{' '}
+                        <strong>{Number(zonaAlvo.chuva_prevista_72h_mm).toFixed(1)} mm</strong>
+                      </div>
+                      <small className="muted">
+                        Composição do score: Reincidência {zonaAlvo.fator_reincidencia}% • Contágio/Vento{' '}
+                        {zonaAlvo.fator_contagio_vento}% • Microclima seco {zonaAlvo.fator_microclima}%
+                      </small>
+                    </div>
+                  )}
+                </div>
+
+                <div className="card">
+                  <h3>Top Setores para Patrulha ({zonasRisco.length})</h3>
+                  {zonasRisco.length === 0 ? (
+                    <p className="muted">Nenhuma zona atingiu risco moderado (&ge;35/100) para as próximas 72h.</p>
+                  ) : (
+                    <div className="lista-frentes" style={{ maxHeight: '440px' }}>
+                      {zonasRisco.slice(0, 15).map((z, idx) => (
+                        <button
+                          key={z.hex_id}
+                          className={`frente-item ${zonaAlvo?.hex_id === z.hex_id ? 'sel' : ''}`}
+                          onClick={() => setZonaAlvo(z)}
+                        >
+                          <div className="frente-top">
+                            <strong>Setor #{idx + 1} • Score {Number(z.score_risco).toFixed(0)}</strong>
+                            <span className={`badge ${z.nivel_risco === 'CRÍTICO' ? 'CRÍTICA' : z.nivel_risco === 'ALTO' ? 'ALTA' : 'MODERADA'}`}>
+                              {z.nivel_risco}
+                            </span>
+                          </div>
+                          <small>{z.motivo_principal}</small>
+                          <small className="jurisd">
+                            {paraGMS(z.centro_lat, 'lat')} | {paraGMS(z.centro_lon, 'lon')}
+                          </small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </section>
 
               <section className="cards-4">

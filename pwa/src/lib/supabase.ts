@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import type { Polygon } from 'geojson';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
@@ -83,4 +84,24 @@ export interface SerieDiariaItem {
   frp_total_snpp: number;
   nesterov_raw: number;
   dry_spell: number;
+}
+
+export interface ZonaRiscoEspacial {
+  id: number;
+  codigo_ibge: string;
+  hex_id: string;
+  data_referencia: string;
+  centro_lat: number;
+  centro_lon: number;
+  score_risco: number;
+  nivel_risco: 'MODERADO' | 'ALTO' | 'CRÍTICO';
+  focos_esperados_72h: number;
+  fator_reincidencia: number;
+  fator_contagio_vento: number;
+  fator_microclima: number;
+  direcao_vento_graus: number;
+  velocidade_vento_kmh: number;
+  chuva_prevista_72h_mm: number;
+  motivo_principal: string;
+  geojson: Polygon;
 }

@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import type { MunicipioIBGE, PerfilUsuario, PrevisaoIA } from './supabase';
+import type { MunicipioIBGE, PerfilUsuario, PrevisaoIA, ZonaRiscoEspacial } from './supabase';
 import { paraGMS, type FrenteCombate } from './geoprocessing';
 
 type DocWithTable = jsPDF & { lastAutoTable?: { finalY: number } };
@@ -40,6 +40,7 @@ export async function emitirBoletimOficialPDF(params: {
   frentes: FrenteCombate[];
   janelaHoras: number;
   totalFocosJanela: number;
+  zonasRisco?: ZonaRiscoEspacial[];
 }): Promise<void> {
   const { municipio, perfil, previsao, frentes, janelaHoras, totalFocosJanela } = params;
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' }) as DocWithTable;
@@ -201,6 +202,36 @@ export async function emitirBoletimOficialPDF(params: {
         f.jurisdicoes.length ? f.jurisdicoes.join('; ') : 'Área municipal geral',
       ]),
       headStyles: { fillColor: [185, 28, 28], fontSize: 8 },
+      bodyStyles: { fontSize: 7.8 },
+      margin: { left: 14, right: 14 },
+    });
+    y = (doc.lastAutoTable?.finalY ?? y + 30) + 6;
+  }
+
+  // 5B. Top 5 Setores Prioritários para Patrulha Preventiva (72h)
+  const topZonas = (params.zonasRisco || []).slice(0, 5);
+  if (topZonas.length > 0) {
+    if (y > 235) {
+      doc.addPage();
+      y = 18;
+    }
+    doc.setTextColor(15, 23, 42);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('4. Setores Prioritários de Risco de Ignição/Propagação (Próximas 72h)', 14, y);
+
+    autoTable(doc, {
+      startY: y + 3,
+      head: [['Setor', 'Risco', 'Score', 'Centroide (GMS)', 'Vento / Chuva 72h', 'Motivo Físico']],
+      body: topZonas.map((z, idx) => [
+        `Setor #${idx + 1}`,
+        z.nivel_risco,
+        `${Number(z.score_risco).toFixed(0)}/100`,
+        `${paraGMS(z.centro_lat, 'lat')}\n${paraGMS(z.centro_lon, 'lon')}`,
+        `${Number(z.velocidade_vento_kmh).toFixed(0)} km/h | ${Number(z.chuva_prevista_72h_mm).toFixed(0)} mm`,
+        z.motivo_principal,
+      ]),
+      headStyles: { fillColor: [194, 65, 12], fontSize: 8 },
       bodyStyles: { fontSize: 7.8 },
       margin: { left: 14, right: 14 },
     });
