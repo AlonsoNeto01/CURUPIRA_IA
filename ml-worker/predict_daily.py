@@ -362,6 +362,10 @@ def main():
         raio = q_conf * (sd_log + eps_conf)
         ic_inf = np.expm1(np.clip(mu_log - raio, 0.0, log_clip_max))
         ic_sup = np.expm1(np.clip(mu_log + raio, 0.0, log_clip_max))
+        # Faixa operacional de 80% (evita explosão exponencial de cauda extrema no planejamento tático)
+        raio_op80 = 1.85 * (sd_log + eps_conf)
+        ic80_inf = np.expm1(np.clip(mu_log - raio_op80, 0.0, log_clip_max))
+        ic80_sup = np.expm1(np.clip(mu_log + raio_op80, 0.0, log_clip_max))
         prob_cls = np.stack(cls_samples, axis=0).mean(axis=0)
 
         ult = df_feat.iloc[-1]
@@ -396,6 +400,12 @@ def main():
                 "chuva_prevista_72h_mm": round(float(df_futuro["precipitacao_mm"].sum()), 1),
                 "fim_de_semana_d1": bool(d_sem[0] >= 4),
                 "delta_solo_7d_pct": round(float(ult["delta_solo_7d"] * 100.0), 2),
+                "ic80_inf_d1": round(float(ic80_inf[0]), 1),
+                "ic80_sup_d1": round(float(ic80_sup[0]), 1),
+                "ic80_inf_d2": round(float(ic80_inf[1]), 1),
+                "ic80_sup_d2": round(float(ic80_sup[1]), 1),
+                "ic80_inf_d3": round(float(ic80_inf[2]), 1),
+                "ic80_sup_d3": round(float(ic80_sup[2]), 1),
             },
             "r2_validacao": 0.3830,
             "mae_validacao": 4.5130,

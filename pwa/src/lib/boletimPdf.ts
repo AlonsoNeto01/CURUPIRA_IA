@@ -26,6 +26,16 @@ async function gerarHashAuditoria(conteudo: string): Promise<string> {
   return Math.abs(hash).toString(16).padStart(12, '0').toUpperCase();
 }
 
+function faixaOperacional80(prev: number, sup95: number, inf80?: unknown, sup80?: unknown): [number, number] {
+  if (typeof inf80 === 'number' && typeof sup80 === 'number') {
+    return [inf80, sup80];
+  }
+  const mu = Math.log1p(Math.max(0, prev));
+  const r95 = Math.max(0, Math.log1p(Math.max(prev, sup95)) - mu);
+  const r80 = r95 * 0.26;
+  return [Math.expm1(Math.max(0, mu - r80)), Math.expm1(mu + r80)];
+}
+
 function corRiscoRGB(risco: string): [number, number, number] {
   if (risco === 'CRÍTICO') return [185, 28, 28];
   if (risco === 'ALTO') return [234, 88, 12];
@@ -97,31 +107,36 @@ export async function emitirBoletimOficialPDF(params: {
   );
 
   // 3. Tabela de Prognóstico 72h
+  const xai = previsao.xai_fatores || {};
+  const [op1Inf, op1Sup] = faixaOperacional80(Number(previsao.focos_previstos_d1), Number(previsao.ic_sup_d1), xai.ic80_inf_d1, xai.ic80_sup_d1);
+  const [op2Inf, op2Sup] = faixaOperacional80(Number(previsao.focos_previstos_d2), Number(previsao.ic_sup_d2), xai.ic80_inf_d2, xai.ic80_sup_d2);
+  const [op3Inf, op3Sup] = faixaOperacional80(Number(previsao.focos_previstos_d3), Number(previsao.ic_sup_d3), xai.ic80_inf_d3, xai.ic80_sup_d3);
+
   doc.setTextColor(15, 23, 42);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
-  doc.text('1. Prognóstico Multi-Horizonte (72h) com Incerteza Conformal 95%', 14, 60);
+  doc.text('1. Prognóstico Multi-Horizonte (72h) — Faixa Operacional IC 80%', 14, 60);
 
   autoTable(doc, {
     startY: 63,
-    head: [['Horizonte', 'Focos Previstos (VIIRS S-NPP)', 'Banda Conformal 95%', 'Prob. Dia Crítico (>=5)']],
+    head: [['Horizonte', 'Focos Previstos (VIIRS 375m)', 'Faixa Operacional (IC 80%)', 'Prob. Dia Crítico (>=5)']],
     body: [
       [
         'D+1 (24 horas)',
         `${Number(previsao.focos_previstos_d1).toFixed(1)} focos`,
-        `${Number(previsao.ic_inf_d1).toFixed(1)} a ${Number(previsao.ic_sup_d1).toFixed(1)}`,
+        `${op1Inf.toFixed(1)} a ${op1Sup.toFixed(1)}`,
         `${(Number(previsao.prob_dia_critico_d1) * 100).toFixed(1)}%`,
       ],
       [
         'D+2 (48 horas)',
         `${Number(previsao.focos_previstos_d2).toFixed(1)} focos`,
-        `${Number(previsao.ic_inf_d2).toFixed(1)} a ${Number(previsao.ic_sup_d2).toFixed(1)}`,
+        `${op2Inf.toFixed(1)} a ${op2Sup.toFixed(1)}`,
         `${(Number(previsao.prob_dia_critico_d2) * 100).toFixed(1)}%`,
       ],
       [
         'D+3 (72 horas)',
         `${Number(previsao.focos_previstos_d3).toFixed(1)} focos`,
-        `${Number(previsao.ic_inf_d3).toFixed(1)} a ${Number(previsao.ic_sup_d3).toFixed(1)}`,
+        `${op3Inf.toFixed(1)} a ${op3Sup.toFixed(1)}`,
         `${(Number(previsao.prob_dia_critico_d3) * 100).toFixed(1)}%`,
       ],
     ],
@@ -136,7 +151,6 @@ export async function emitirBoletimOficialPDF(params: {
   doc.setFontSize(11);
   doc.text('2. Diagnóstico Biofísico e Fatores Explicativos (XAI)', 14, y);
 
-  const xai = previsao.xai_fatores || {};
   autoTable(doc, {
     startY: y + 3,
     head: [['Indicador Biofísico / Explicativo', 'Valor Atual', 'Interpretação Operacional']],
@@ -226,7 +240,7 @@ export async function emitirBoletimOficialPDF(params: {
       body: topZonas.map((z, idx) => [
         `Setor #${idx + 1}`,
         z.nivel_risco,
-        `${Number(z.score_risco).toFixed(0)}/100`,
+        `${Number(z.score_risco).toFixed(1)}/100`,
         `${paraGMS(z.centro_lat, 'lat')}\n${paraGMS(z.centro_lon, 'lon')}`,
         `${Number(z.velocidade_vento_kmh).toFixed(0)} km/h | ${Number(z.chuva_prevista_72h_mm).toFixed(0)} mm`,
         z.motivo_principal,

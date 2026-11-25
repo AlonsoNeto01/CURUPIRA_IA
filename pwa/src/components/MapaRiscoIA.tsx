@@ -53,17 +53,19 @@ export function MapaRiscoIA({ municipio, zonas, zonaSelecionada, onSelectZona }:
         source: 'zonas-risco-ia',
         paint: {
           'fill-color': [
-            'match',
-            ['get', 'nivel_risco'],
-            'CRÍTICO', '#ef4444',
-            'ALTO', '#f97316',
-            '#eab308',
+            'interpolate',
+            ['linear'],
+            ['get', 'score_risco'],
+            35, '#eab308',
+            55, '#f97316',
+            75, '#ef4444',
+            90, '#7f1d1d',
           ],
           'fill-opacity': [
             'case',
             ['==', ['get', 'selecionado'], true],
-            0.72,
-            0.46,
+            0.82,
+            0.58,
           ],
         },
       });

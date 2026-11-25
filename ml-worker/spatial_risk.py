@@ -195,6 +195,7 @@ def calcular_e_gravar_risco_espacial(
     # ------------------------------------------------------------------
     focos_48h = _carregar_focos_ativos_48h(sb, codigo_ibge)
     fator_contagio = np.zeros(n_hex, dtype=np.float64)
+    energia_contagio = np.zeros(n_hex, dtype=np.float64)
 
     if focos_48h:
         f_lats = np.array([float(f["lat"]) for f in focos_48h], dtype=np.float64)
@@ -204,24 +205,24 @@ def calcular_e_gravar_risco_espacial(
 
         dist_f_h, az_f_h = _haversine_e_azimute(f_lats, f_lons, hex_lats, hex_lons)  # (F, H)
 
-        # Núcleo de proximidade (raio de decaimento ~ 12 km)
-        prox = np.exp(-((dist_f_h / 12.0) ** 2))
-        prox[dist_f_h > 32.0] = 0.0
+        # Núcleo de proximidade (raio de decaimento ~ 10 km para destacar epicentros)
+        prox = np.exp(-((dist_f_h / 10.0) ** 2))
+        prox[dist_f_h > 30.0] = 0.0
 
         # Alinhamento com o vetor downwind do vento previsto (bônus até +75% a favor do vento)
         delta_ang = np.radians(az_f_h - vento_to_hex[None, :])
         alinhamento = np.maximum(0.0, np.cos(delta_ang))
         intensidade_vento = np.clip(vento_hex[None, :] / 18.0, 0.2, 1.2)
         bonus_vento = 1.0 + 0.75 * alinhamento * intensidade_vento
-        # Dentro do próprio hexágono (< 6 km), o contágio independe do alinhamento direcional
-        bonus_vento = np.where(dist_f_h < 6.0, 1.35, bonus_vento)
+        # Dentro do próprio hexágono (< 5 km), o contágio independe do alinhamento direcional
+        bonus_vento = np.where(dist_f_h < 5.0, 1.35, bonus_vento)
 
         energia_contagio = (prox * bonus_vento * peso_foco[:, None]).sum(axis=0)
-        # Saturação suave em [0, 1]
-        fator_contagio = 1.0 - np.exp(-energia_contagio / 2.2)
+        # Saturação racional suave (Michaelis-Menten): preserva hierarquia sem achatar no teto
+        fator_contagio = energia_contagio / (energia_contagio + 6.5)
 
     # ------------------------------------------------------------------
-    # 4. COMPOSIÇÃO FINAL + MODULAÇÃO PELA CURUPIRANET V2
+    # 4. COMPOSIÇÃO FINAL + CURVA SUAVE SEM EMPATES NO TOPO
     # ------------------------------------------------------------------
     prob_crit_d1 = float(payload_ia.get("prob_dia_critico_d1") or 0.0)
     focos_72h_tot = (
@@ -230,17 +231,24 @@ def calcular_e_gravar_risco_espacial(
         + float(payload_ia.get("focos_previstos_d3") or 0.0)
     )
 
-    # Intensidade municipal vinda da rede neural [0.45 .. 1.15]
-    mod_ia = 0.45 + 0.70 * max(prob_crit_d1, min(1.0, focos_72h_tot / 35.0))
+    # Intensidade municipal vinda da rede neural [0.50 .. 1.12]
+    mod_ia = 0.50 + 0.62 * max(prob_crit_d1, min(1.0, focos_72h_tot / 45.0))
 
-    # Combinação física: reincidência + contágio direcional + microclima seco
-    score_bruto = (0.45 * fator_reinc + 0.35 * fator_contagio + 0.20 * fator_micro) * mod_ia
-    # Se o próprio hexágono está com fogo intenso ou diretamente sob pluma downwind seca, preserva piso crítico
-    score_bruto = np.maximum(score_bruto, 0.85 * fator_contagio * (0.5 + 0.5 * secura_chuva))
-    score_pct = np.clip(score_bruto * 100.0, 0.0, 99.9)
+    # Destaque relativo do epicentro dentro da mancha ativa do município
+    e_p99 = float(np.percentile(energia_contagio[energia_contagio > 0], 99)) if np.any(energia_contagio > 0) else 1.0
+    fator_epicentro = np.clip(energia_contagio / max(e_p99, 4.0), 0.0, 1.15) ** 0.70
 
-    # Seleciona hexágonos com risco >= MODERADO (score >= 35), limitado aos Top 80 por município
-    ordem = np.argsort(-score_pct)
+    # Combinação física contínua + compressão assintótica suave (35–55 Moderado | 55–75 Alto | 75–90 Crítico | 90–98 Epicentro)
+    impulso = (
+        0.34 * fator_reinc
+        + 0.34 * fator_contagio
+        + 0.16 * fator_micro
+        + 0.28 * fator_epicentro * secura_chuva
+    ) * mod_ia
+    score_pct = 98.6 * (1.0 - np.exp(-2.25 * impulso))
+
+    # Ordenação com desempate determinístico por energia radiativa/contágio e reincidência
+    ordem = np.lexsort((-sazonal_raw, -energia_contagio, -score_pct))
     selecionados = [int(i) for i in ordem if score_pct[i] >= 35.0][:80]
 
     # Limpa gravações anteriores do mesmo dia/município para manter mapa limpo
@@ -257,7 +265,7 @@ def calcular_e_gravar_risco_espacial(
     registros = []
     for k, i in enumerate(selecionados):
         sc = float(score_pct[i])
-        nivel = "CRÍTICO" if sc >= 72.0 else ("ALTO" if sc >= 52.0 else "MODERADO")
+        nivel = "CRÍTICO" if sc >= 75.0 else ("ALTO" if sc >= 55.0 else "MODERADO")
         rumo_prop = _rumo_cardeal(float(vento_to_hex[i]))
 
         # Explicação física legível para a Defesa Civil e PDF
